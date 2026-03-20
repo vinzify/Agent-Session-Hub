@@ -10,10 +10,10 @@ Describe 'Display ordering' {
         )
 
         $ordered = @(Get-CshDisplaySessions -Sessions $sessions)
-        $ordered[0].SessionId | Should Be '1'
-        $ordered[1].SessionId | Should Be '2'
-        $ordered[0].DisplayNumber | Should Be 1
-        $ordered[1].DisplayNumber | Should Be 2
+        $ordered[0].SessionId | Should -Be '1'
+        $ordered[1].SessionId | Should -Be '2'
+        $ordered[0].DisplayNumber | Should -Be 1
+        $ordered[1].DisplayNumber | Should -Be 2
     }
 
     It 'encodes row identity keys for sessions and projects' {
@@ -22,17 +22,17 @@ Describe 'Display ordering' {
         }
         $sessionRow = ConvertTo-CshFzfRow -Session $session
 
-        $sessionRow | Should Match '^S:abc\t'
-        (New-CshProjectRowKey -ProjectPath 'C:\Users\twinr\Desktop') | Should Match '^P:'
+        $sessionRow | Should -Match '^S:abc\t'
+        (New-CshProjectRowKey -ProjectPath 'C:\Users\twinr\Desktop') | Should -Match '^P:'
     }
 
     It 'builds an fzf query command with a quoted query placeholder' {
         $command = Get-CshQueryCommand
 
         if ($IsWindows) {
-            $command | Should Match 'csx-query\.cmd"$'
+            $command | Should -Match 'csx-query\.cmd"$'
         } else {
-            $command | Should Match '__query$'
+            $command | Should -Match '__query$'
         }
     }
 
@@ -40,9 +40,9 @@ Describe 'Display ordering' {
         $command = Get-CshPreviewCommand
 
         if ($IsWindows) {
-            $command | Should Match 'csx-preview\.cmd" \{\}$'
+            $command | Should -Match 'csx-preview\.cmd" \{\}$'
         } else {
-            $command | Should Match '__preview \{\}$'
+            $command | Should -Match '__preview \{\}$'
         }
     }
 }

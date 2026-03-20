@@ -4,11 +4,15 @@ Describe 'Normalize-CshPath' {
     }
 
     It 'removes the Windows long path prefix' {
-        (Normalize-CshPath '\\?\D:\code\example') | Should Be 'D:\code\example'
+        (Normalize-CshPath '\\?\D:\code\example') | Should -Be 'D:\code\example'
     }
 }
 
 Describe 'Get-CshFilteredDisplaySessions' {
+    BeforeAll {
+        . (Join-Path $PSScriptRoot 'TestBootstrap.ps1')
+    }
+
     It 'treats quote-only queries as empty' {
         $sessions = @(
             [pscustomobject]@{
@@ -20,18 +24,22 @@ Describe 'Get-CshFilteredDisplaySessions' {
         )
 
         $filtered = @(Get-CshFilteredDisplaySessions -Sessions $sessions -Query '""""')
-        $filtered.Count | Should Be 1
-        $filtered[0].SessionId | Should Be '1'
+        $filtered.Count | Should -Be 1
+        $filtered[0].SessionId | Should -Be '1'
     }
 }
 
 Describe 'Format-CshAsciiBanner' {
+    BeforeAll {
+        . (Join-Path $PSScriptRoot 'TestBootstrap.ps1')
+    }
+
     It 'renders a compact three-line banner' {
         $banner = Format-CshAsciiBanner -Kind 'project' -Primary 'Desktop' -Secondary '10 sessions'
         $lines = @($banner -split [Environment]::NewLine)
 
-        $lines.Count | Should Be 3
-        $lines[1] | Should Match 'PROJECT'
-        $lines[1] | Should Match 'Desktop'
+        $lines.Count | Should -Be 3
+        $lines[1] | Should -Match 'PROJECT'
+        $lines[1] | Should -Match 'Desktop'
     }
 }
