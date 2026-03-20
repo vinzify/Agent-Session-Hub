@@ -1,13 +1,12 @@
 <div align="center">
+  <img src="banner.png" width="800" alt="Codex Session Hub Banner" />
   <h1>Codex Session Hub</h1>
   <p><strong>A blazing fast, <code>fzf</code>-powered PowerShell 7 CLI for browsing and managing Codex CLI sessions.</strong></p>
   
   <p>
-    <a href="https://github.com/vinzify/Codex-Session-Hub/releases"><img src="https://img.shields.io/github/v/release/vinzify/Codex-Session-Hub?style=flat-square&color=blue" alt="Current Release"></a>
     <a href="https://learn.microsoft.com/en-us/powershell/"><img src="https://img.shields.io/badge/Built_with-PowerShell_7-blue?style=flat-square" alt="Built with PowerShell 7"></a>
     <a href="https://github.com/junegunn/fzf"><img src="https://img.shields.io/badge/Powered_by-fzf-orange?style=flat-square" alt="Powered by fzf"></a>
     <a href="https://github.com/vinzify/Codex-Session-Hub/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square" alt="License: MIT"></a>
-    <a href="https://github.com/vinzify/Codex-Session-Hub/stargazers"><img src="https://img.shields.io/github/stars/vinzify/Codex-Session-Hub?style=social" alt="GitHub stars"></a>
   </p>
 </div>
 
