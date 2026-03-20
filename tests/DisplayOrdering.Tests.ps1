@@ -1,7 +1,6 @@
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = Split-Path -Parent $here
-Import-Module (Join-Path $projectRoot 'src/CodexSessionHub.psd1') -Force
-$module = Get-Module CodexSessionHub
+$module = Import-Module (Join-Path $projectRoot 'src/CodexSessionHub.psd1') -Force -PassThru
 
 Describe 'Display ordering' {
     It 'returns sessions in grouped display order' {
