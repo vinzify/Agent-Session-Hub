@@ -23,9 +23,21 @@ Codex Session Hub gives Codex CLI a global session browser. Instead of opening a
 
 ## Quick Start
 
+1. Install:
+
 ```powershell
 irm https://raw.githubusercontent.com/vinzify/Codex-Session-Hub/master/install.ps1 | iex
+```
+
+2. Reload your PowerShell profile:
+
+```powershell
 . $PROFILE
+```
+
+3. Launch Codex Session Hub:
+
+```powershell
 csx
 ```
 
@@ -53,6 +65,11 @@ Then reload your shell:
 
 ```powershell
 . $PROFILE
+```
+
+Then verify the command is available:
+
+```powershell
 csx doctor
 ```
 
