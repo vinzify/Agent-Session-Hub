@@ -1,0 +1,13 @@
+# PowerShell
+*.user
+*.cache
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test output
+TestResults/
+
+# Local config
+.vscode/
