@@ -63,6 +63,11 @@ function Normalize-CshPath {
 
     $trimmed = $Path.Trim() -replace '^[\\/]{2}\?[\\/]', ''
 
+    # Keep Windows drive-style paths stable even when parsed on Unix runners.
+    if ($trimmed -match '^[A-Za-z]:[\\/]') {
+        return $trimmed.TrimEnd('\', '/')
+    }
+
     try {
         $fullPath = [System.IO.Path]::GetFullPath($trimmed)
     } catch {
