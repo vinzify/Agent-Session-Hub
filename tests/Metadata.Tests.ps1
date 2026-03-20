@@ -1,7 +1,10 @@
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-. (Join-Path $here 'TestBootstrap.ps1')
 
 Describe 'Index metadata' {
+    BeforeAll {
+        . (Join-Path $here 'TestBootstrap.ps1')
+    }
+
     It 'stores aliases in memory' {
         $index = New-CshIndex
         Set-CshAlias -Index $index -SessionId 'abc' -Alias 'hello'

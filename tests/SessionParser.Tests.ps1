@@ -1,7 +1,10 @@
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-. (Join-Path $here 'TestBootstrap.ps1')
 
 Describe 'Normalize-CshPath' {
+    BeforeAll {
+        . (Join-Path $here 'TestBootstrap.ps1')
+    }
+
     It 'removes the Windows long path prefix' {
         (Normalize-CshPath '\\?\D:\code\example') | Should Be 'D:\code\example'
     }

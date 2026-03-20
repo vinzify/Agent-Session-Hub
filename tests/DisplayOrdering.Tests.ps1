@@ -1,7 +1,10 @@
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-. (Join-Path $here 'TestBootstrap.ps1')
 
 Describe 'Display ordering' {
+    BeforeAll {
+        . (Join-Path $here 'TestBootstrap.ps1')
+    }
+
     It 'returns sessions in grouped display order' {
         $sessions = @(
             [pscustomobject]@{ SessionId='2'; Timestamp=[datetimeoffset]'2026-03-01'; TimestampText='2026-03-01 00:00'; LastUpdated=[datetimeoffset]'2026-03-01'; LastUpdatedText='2026-03-01 00:00'; LastUpdatedAge='1d ago'; ProjectKey='b'; ProjectName='B'; ProjectPath='B'; FilePath=''; ProjectExists=$true; Alias=''; Preview=''; DisplayTitle='B1' },
