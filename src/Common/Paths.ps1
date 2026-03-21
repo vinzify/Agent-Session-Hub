@@ -46,6 +46,43 @@ function Get-CshProfilePath {
     return $PROFILE.CurrentUserCurrentHost
 }
 
+function Get-CshLauncherRoot {
+    if ($IsWindows) {
+        return ''
+    }
+
+    return (Join-Path $HOME '.local/bin')
+}
+
+function Get-CshShellProfilePath {
+    if ($IsWindows) {
+        return (Get-CshProfilePath)
+    }
+
+    $shellPath = [string]$env:SHELL
+    $zshProfile = Join-Path $HOME '.zprofile'
+    $bashProfile = Join-Path $HOME '.bash_profile'
+    $defaultProfile = Join-Path $HOME '.profile'
+
+    if ($shellPath -match '(^|/)zsh$') {
+        return $zshProfile
+    }
+
+    if ($shellPath -match '(^|/)bash$') {
+        return $bashProfile
+    }
+
+    if (Test-Path $zshProfile) {
+        return $zshProfile
+    }
+
+    if (Test-Path $bashProfile) {
+        return $bashProfile
+    }
+
+    return $defaultProfile
+}
+
 function Ensure-CshDirectory {
     param([Parameter(Mandatory = $true)][string]$Path)
 

@@ -40,6 +40,14 @@ function Resolve-CshSourceRoot {
         [Parameter(Mandatory = $true)][string]$Ref
     )
 
+    if ($env:CODEX_SESSION_HUB_SOURCE_ROOT -and (Test-CshRepoRoot -Path $env:CODEX_SESSION_HUB_SOURCE_ROOT)) {
+        return [pscustomobject]@{
+            Root        = $env:CODEX_SESSION_HUB_SOURCE_ROOT
+            Temporary   = $false
+            Description = "local override at $($env:CODEX_SESSION_HUB_SOURCE_ROOT)"
+        }
+    }
+
     $scriptPath = ''
 
     $psCommandPathVariable = Get-Variable -Name PSCommandPath -Scope Script -ErrorAction SilentlyContinue
@@ -103,7 +111,7 @@ function Install-CshPayload {
 
     New-Item -ItemType Directory -Force -Path $DestinationRoot | Out-Null
 
-    foreach ($relativePath in @('bin', 'src', 'README.md', 'LICENSE', 'CHANGELOG.md', 'install.ps1', 'uninstall.ps1')) {
+    foreach ($relativePath in @('bin', 'src', 'README.md', 'LICENSE', 'CHANGELOG.md', 'install.ps1', 'uninstall.ps1', 'install.sh', 'uninstall.sh')) {
         $sourcePath = Join-Path $SourceRoot $relativePath
         if (-not (Test-Path $sourcePath)) {
             throw "Required install asset is missing: $sourcePath"
@@ -115,44 +123,9 @@ function Install-CshPayload {
 
 function Install-CshShellIntegration {
     param([Parameter(Mandatory = $true)][string]$InstalledRoot)
-
-    $profilePath = $PROFILE.CurrentUserCurrentHost
-    $profileDirectory = Split-Path -Parent $profilePath
-    if (-not (Test-Path $profileDirectory)) {
-        New-Item -ItemType Directory -Force -Path $profileDirectory | Out-Null
-    }
-
-    $modulePath = (Join-Path $InstalledRoot 'src/CodexSessionHub.psd1').Replace("'", "''")
-    $markerStart = '# >>> Codex Session Hub >>>'
-    $markerEnd = '# <<< Codex Session Hub <<<'
-$blockTemplate = @'
-# >>> Codex Session Hub >>>
-$cshFzfPath = Join-Path $env:LOCALAPPDATA 'Programs\fzf\bin'
-if ((Test-Path $cshFzfPath) -and (($env:Path -split ';') -notcontains $cshFzfPath)) {{
-    $env:Path = "$cshFzfPath;$env:Path"
-}}
-function csx {{
-    Import-Module '{0}' -Force
-    Invoke-CsxCli -Arguments $args -ShellMode
-}}
-Set-Alias cxs csx
-# <<< Codex Session Hub <<<
-'@
-    $block = $blockTemplate -f $modulePath
-
-    $content = if (Test-Path $profilePath) { Get-Content -Path $profilePath -Raw } else { '' }
-    $pattern = [regex]::Escape($markerStart) + '.*?' + [regex]::Escape($markerEnd)
-
-    if ($content -match $pattern) {
-        $updated = [regex]::Replace($content, $pattern, $block, [System.Text.RegularExpressions.RegexOptions]::Singleline)
-    } elseif ([string]::IsNullOrWhiteSpace($content)) {
-        $updated = $block
-    } else {
-        $updated = $content.TrimEnd() + [Environment]::NewLine + [Environment]::NewLine + $block
-    }
-
-    Set-Content -Path $profilePath -Value $updated
-    return $profilePath
+    $modulePath = Join-Path $InstalledRoot 'src/CodexSessionHub.psd1'
+    Import-Module $modulePath -Force
+    return @(Invoke-CsxCli -Arguments @('install-shell'))
 }
 
 function Get-CshPostInstallState {
@@ -161,12 +134,25 @@ function Get-CshPostInstallState {
         [bool]$ProfileInstalled
     )
 
-    $profilePath = $PROFILE.CurrentUserCurrentHost
+    $profilePath = if ($IsWindows) {
+        $PROFILE.CurrentUserCurrentHost
+    } else {
+        $shellPath = [string]$env:SHELL
+        if ($shellPath -match '(^|/)zsh$') {
+            Join-Path $HOME '.zprofile'
+        } elseif ($shellPath -match '(^|/)bash$') {
+            Join-Path $HOME '.bash_profile'
+        } else {
+            Join-Path $HOME '.profile'
+        }
+    }
     $modulePath = Join-Path $InstalledRoot 'src/CodexSessionHub.psd1'
+    $launcherPath = if ($IsWindows) { '' } else { Join-Path $HOME '.local/bin/csx' }
 
     [pscustomobject]@{
         ModulePath       = $modulePath
         ProfilePath      = $profilePath
+        LauncherPath     = $launcherPath
         ProfileInstalled = $ProfileInstalled
         FzfAvailable     = [bool](Get-Command fzf -ErrorAction SilentlyContinue)
         CodexAvailable   = [bool](Get-Command codex -ErrorAction SilentlyContinue)
@@ -181,7 +167,8 @@ try {
     Install-CshPayload -SourceRoot $source.Root -DestinationRoot $resolvedInstallRoot
     $profileInstalled = $false
     if (-not $SkipShellIntegration) {
-        [void](Install-CshShellIntegration -InstalledRoot $resolvedInstallRoot)
+        $shellInstallOutput = @(Install-CshShellIntegration -InstalledRoot $resolvedInstallRoot)
+        $shellInstallOutput | ForEach-Object { Write-Host $_ }
         $profileInstalled = $true
     }
     $postInstall = Get-CshPostInstallState -InstalledRoot $resolvedInstallRoot -ProfileInstalled $profileInstalled
@@ -198,8 +185,14 @@ try {
     }
 
     if (-not $SkipShellIntegration) {
-        Write-Host "Shell integration installed in $($postInstall.ProfilePath)"
-        Write-Host 'Reload your shell with: . $PROFILE'
+        if ($IsWindows) {
+            Write-Host "Shell integration installed in $($postInstall.ProfilePath)"
+            Write-Host 'Reload your shell with: . $PROFILE'
+        } else {
+            Write-Host "Shell integration installed in $($postInstall.ProfilePath)"
+            Write-Host "Launchers installed in $(Split-Path -Parent $postInstall.LauncherPath)"
+            Write-Host "Reload your shell with: source $($postInstall.ProfilePath)"
+        }
         Write-Host 'Then run: csx doctor'
     } else {
         Write-Host 'Shell integration was skipped.'

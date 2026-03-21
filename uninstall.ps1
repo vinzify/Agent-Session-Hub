@@ -18,27 +18,21 @@ function Get-CshProfilePath {
 }
 
 function Uninstall-CshShellIntegration {
-    $profilePath = Get-CshProfilePath
-    if (-not (Test-Path $profilePath)) {
-        return
+    param([Parameter(Mandatory = $true)][string]$ResolvedInstallRoot)
+
+    $modulePath = Join-Path $ResolvedInstallRoot 'src/CodexSessionHub.psd1'
+    if (-not (Test-Path $modulePath)) {
+        return $false
     }
 
-    $markerStart = '# >>> Codex Session Hub >>>'
-    $markerEnd = '# <<< Codex Session Hub <<<'
-    $content = Get-Content -Path $profilePath -Raw
-    $pattern = [regex]::Escape($markerStart) + '.*?' + [regex]::Escape($markerEnd)
-    $updated = [regex]::Replace($content, $pattern, '', [System.Text.RegularExpressions.RegexOptions]::Singleline).Trim()
-
-    if ($updated) {
-        Set-Content -Path $profilePath -Value ($updated + [Environment]::NewLine)
-    } else {
-        Remove-Item -Path $profilePath -Force
-    }
+    Import-Module $modulePath -Force
+    [void]@(Invoke-CsxCli -Arguments @('uninstall-shell'))
+    return $true
 }
 
 $resolvedInstallRoot = if ($InstallRoot) { $InstallRoot } else { Get-CshDefaultInstallRoot }
 
-Uninstall-CshShellIntegration
+[void](Uninstall-CshShellIntegration -ResolvedInstallRoot $resolvedInstallRoot)
 
 if (Test-Path $resolvedInstallRoot) {
     Remove-Item -LiteralPath $resolvedInstallRoot -Recurse -Force

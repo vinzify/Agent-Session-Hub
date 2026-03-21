@@ -1,7 +1,7 @@
 <div align="center">
   <img src="banner.png" width="800" alt="Codex Session Hub Banner" />
   <h1>Codex Session Hub</h1>
-  <p><strong>An <code>fzf</code>-powered PowerShell 7 CLI for browsing, resuming, renaming, and deleting Codex CLI sessions across projects.</strong></p>
+  <p><strong>An <code>fzf</code>-powered Codex session browser that runs on PowerShell 7 and works from PowerShell, zsh, and bash terminals.</strong></p>
   
   <p>
     <a href="https://learn.microsoft.com/en-us/powershell/"><img src="https://img.shields.io/badge/Built_with-PowerShell_7-blue?style=flat-square" alt="Built with PowerShell 7"></a>
@@ -23,6 +23,8 @@ Codex Session Hub gives Codex CLI a global session browser. Instead of opening a
 
 ## Quick Start
 
+Windows PowerShell 7+:
+
 1. Install:
 
 ```powershell
@@ -41,10 +43,32 @@ irm https://raw.githubusercontent.com/vinzify/Codex-Session-Hub/master/install.p
 csx
 ```
 
+macOS / Linux terminal:
+
+1. Install:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/vinzify/Codex-Session-Hub/master/install.sh | sh
+```
+
+2. Reload your shell:
+
+```sh
+source ~/.zprofile
+```
+
+If you use bash instead of zsh, reload `~/.bash_profile` or `~/.profile` instead.
+
+3. Launch Codex Session Hub:
+
+```sh
+csx
+```
+
 ## Requirements
 
 Before installing, make sure you have:
-- [PowerShell 7+](https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell)
+- [PowerShell 7+](https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell) available as `pwsh`
 - Codex CLI in `PATH`
 - [`fzf`](https://github.com/junegunn/fzf) in `PATH`
 
@@ -55,7 +79,7 @@ Install `fzf`:
 
 ## Install
 
-Recommended:
+Recommended on Windows PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/vinzify/Codex-Session-Hub/master/install.ps1 | iex
@@ -73,6 +97,26 @@ Then verify the command is available:
 csx doctor
 ```
 
+Recommended on macOS / Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/vinzify/Codex-Session-Hub/master/install.sh | sh
+```
+
+Then reload your shell profile:
+
+```sh
+source ~/.zprofile
+```
+
+If you use bash, reload `~/.bash_profile` or `~/.profile` instead.
+
+Then verify the command is available:
+
+```sh
+csx doctor
+```
+
 Default install locations:
 - Windows: `%LOCALAPPDATA%\CodexSessionHub`
 - macOS / Linux: `~/.local/share/codex-session-hub`
@@ -86,10 +130,21 @@ pwsh -File .\install.ps1
 . $PROFILE
 ```
 
+```sh
+git clone https://github.com/vinzify/Codex-Session-Hub.git
+cd Codex-Session-Hub
+./install.sh
+source ~/.zprofile
+```
+
 Uninstall:
 
 ```powershell
 irm https://raw.githubusercontent.com/vinzify/Codex-Session-Hub/master/uninstall.ps1 | iex
+```
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/vinzify/Codex-Session-Hub/master/uninstall.sh | sh
 ```
 
 ## Usage

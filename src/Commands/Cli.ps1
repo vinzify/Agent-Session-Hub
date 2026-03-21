@@ -23,7 +23,8 @@ function Resolve-CshSelectedSessions {
 function Invoke-CshBrowseCommand {
     param(
         [string]$Query,
-        [switch]$ShellMode
+        [switch]$ShellMode,
+        [switch]$EmitSelection
     )
 
     $initialQuery = $Query
@@ -48,6 +49,12 @@ function Invoke-CshBrowseCommand {
             'enter' {
                 if ($selectedSessions.Count -gt 1) {
                     throw 'Resume only supports one session at a time. Clear multi-select or choose a single row.'
+                }
+
+                if ($EmitSelection) {
+                    $target = $selectedSessions[0]
+                    Write-Output ("{0}`t{1}" -f $target.ProjectPath, $target.SessionId)
+                    return
                 }
 
                 Resume-CshSession -Session $selectedSessions[0] -ShellMode:$ShellMode
@@ -188,6 +195,10 @@ function Invoke-CsxCli {
         '__query' {
             $query = if ($rest.Count -gt 0) { $rest -join ' ' } elseif ($env:FZF_QUERY) { $env:FZF_QUERY } else { '' }
             Write-CshQueryRows -Query $query
+        }
+        '__select' {
+            $query = if ($rest.Count -gt 0) { $rest -join ' ' } else { '' }
+            Invoke-CshBrowseCommand -Query $query -EmitSelection
         }
         'browse' {
             $query = if ($rest.Count -gt 0) { $rest -join ' ' } else { '' }

@@ -6,42 +6,30 @@ Describe 'install.ps1 bootstrap mode' {
 
         try {
             $scriptContent = Get-Content -Path $installScriptPath -Raw
+            $originalSourceRoot = [string]$env:CODEX_SESSION_HUB_SOURCE_ROOT
+            $env:CODEX_SESSION_HUB_SOURCE_ROOT = $projectRoot
             & ([scriptblock]::Create($scriptContent)) -InstallRoot $installRoot -SkipShellIntegration *> $null
 
             (Test-Path (Join-Path $installRoot 'src/CodexSessionHub.psd1')) | Should -BeTrue
             (Test-Path (Join-Path $installRoot 'bin/csx.ps1')) | Should -BeTrue
             (Test-Path (Join-Path $installRoot 'README.md')) | Should -BeTrue
+            (Test-Path (Join-Path $installRoot 'install.sh')) | Should -BeTrue
+            (Test-Path (Join-Path $installRoot 'uninstall.sh')) | Should -BeTrue
         }
         finally {
+            $env:CODEX_SESSION_HUB_SOURCE_ROOT = $originalSourceRoot
             if (Test-Path $installRoot) {
                 Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
             }
         }
     }
 
-    It 'defines shell integration as a literal template' {
+    It 'delegates shell integration to the installed module' {
         $projectRoot = Split-Path -Parent $PSScriptRoot
         $installScriptPath = Join-Path $projectRoot 'install.ps1'
         $scriptContent = Get-Content -Path $installScriptPath -Raw
 
-        $scriptContent | Should -Match '\$blockTemplate = @'''
-        $scriptContent | Should -Match "Join-Path [`$]env:LOCALAPPDATA 'Programs\\fzf\\bin'"
-        $scriptContent | Should -Match 'Invoke-CsxCli -Arguments \$args -ShellMode'
-        $scriptContent | Should -Match '\$block = \$blockTemplate -f \$modulePath'
-        $scriptContent | Should -Match 'if \(\(Test-Path \$cshFzfPath\).*\)\) \{\{'
-        $scriptContent | Should -Match 'function csx \{\{'
-    }
-
-    It 'formats the shell integration template successfully' {
-        $projectRoot = Split-Path -Parent $PSScriptRoot
-        $installScriptPath = Join-Path $projectRoot 'install.ps1'
-        $scriptContent = Get-Content -Path $installScriptPath -Raw
-        $templateMatch = [regex]::Match($scriptContent, "(?s)\$blockTemplate = @'`r?`n(.*?)`r?`n'@")
-
-        $templateMatch.Success | Should -BeTrue
-
-        $formatted = $templateMatch.Groups[1].Value -f 'C:\Temp\CodexSessionHub\src\CodexSessionHub.psd1'
-        $formatted | Should -Match 'function csx \{'
-        $formatted | Should -Match "Import-Module 'C:\\Temp\\CodexSessionHub\\src\\CodexSessionHub\.psd1' -Force"
+        $scriptContent | Should -Match 'Import-Module \$modulePath -Force'
+        $scriptContent | Should -Match "Invoke-CsxCli -Arguments @\('install-shell'\)"
     }
 }
