@@ -180,7 +180,14 @@ Describe 'Read-CshSessionFile git metadata' {
             $actualRepoRoot | Should -Be $expectedRepoRoot
             $session.ProjectPath | Should -Be (Normalize-CshPath $workDir)
             $session.BranchDisplay | Should -Be 'feature/session-hub'
-            $session.WorkspaceKey | Should -Be (Get-CshWorkspaceKey -RepoRoot (Normalize-CshPath $repoRoot) -BranchName 'feature/session-hub' -ProjectPath (Normalize-CshPath $workDir))
+            $expectedWorkspaceKey = Get-CshWorkspaceKey -RepoRoot (Normalize-CshPath $repoRoot) -BranchName 'feature/session-hub' -ProjectPath (Normalize-CshPath $workDir)
+            $actualWorkspaceKey = [string]$session.WorkspaceKey
+            if (-not $IsWindows) {
+                $expectedWorkspaceKey = $expectedWorkspaceKey -replace '^/private', ''
+                $actualWorkspaceKey = $actualWorkspaceKey -replace '^/private', ''
+            }
+
+            $actualWorkspaceKey | Should -Be $expectedWorkspaceKey
         } finally {
             if (Test-Path $tempRoot) {
                 Remove-Item -Path $tempRoot -Recurse -Force
