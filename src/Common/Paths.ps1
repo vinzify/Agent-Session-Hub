@@ -105,6 +105,13 @@ function Normalize-CshPath {
         return ($trimmed -replace '/', '\').TrimEnd('\', '/')
     }
 
+    if ((-not $IsWindows) -and (Test-Path -LiteralPath $trimmed)) {
+        try {
+            return ((Resolve-Path -LiteralPath $trimmed).ProviderPath).TrimEnd('\', '/')
+        } catch {
+        }
+    }
+
     try {
         $fullPath = [System.IO.Path]::GetFullPath($trimmed)
     } catch {
