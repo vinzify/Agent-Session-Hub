@@ -1,6 +1,6 @@
 # Install Guide
 
-The GitHub repository may still be `Codex-Session-Hub`, but the installed product now uses Agent Session Hub naming with two entrypoints:
+The GitHub repository is `Agent-Session-Hub`, and the installed product uses Agent Session Hub naming with two entrypoints:
 - `csx` for Codex sessions
 - `clx` for Claude sessions
 
@@ -13,7 +13,7 @@ PowerShell 7+ is the runtime requirement, but you can launch the tool from Power
 Once the GitHub repository is public:
 
 ```powershell
-irm https://raw.githubusercontent.com/vinzify/Codex-Session-Hub/master/install.ps1 | iex
+irm https://raw.githubusercontent.com/vinzify/Agent-Session-Hub/master/install.ps1 | iex
 ```
 
 Then reload your shell:
@@ -27,7 +27,7 @@ clx doctor
 ### macOS / Linux terminal
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/vinzify/Codex-Session-Hub/master/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/vinzify/Agent-Session-Hub/master/install.sh | sh
 ```
 
 Then reload your shell profile:

@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-REPOSITORY="${REPOSITORY:-vinzify/Codex-Session-Hub}"
+REPOSITORY="${REPOSITORY:-vinzify/Agent-Session-Hub}"
 REF="${REF:-master}"
 
 if ! command -v pwsh >/dev/null 2>&1; then

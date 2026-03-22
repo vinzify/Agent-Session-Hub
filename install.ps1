@@ -1,5 +1,5 @@
 param(
-    [string]$Repository = 'vinzify/Codex-Session-Hub',
+    [string]$Repository = 'vinzify/Agent-Session-Hub',
     [string]$Ref = 'master',
     [string]$InstallRoot,
     [switch]$SkipShellIntegration

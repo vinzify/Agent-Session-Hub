@@ -6,13 +6,13 @@
   <p>
     <a href="https://learn.microsoft.com/en-us/powershell/"><img src="https://img.shields.io/badge/Built_with-PowerShell_7-blue?style=flat-square" alt="Built with PowerShell 7"></a>
     <a href="https://github.com/junegunn/fzf"><img src="https://img.shields.io/badge/Powered_by-fzf-orange?style=flat-square" alt="Powered by fzf"></a>
-    <a href="https://github.com/vinzify/Codex-Session-Hub/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square" alt="License: MIT"></a>
+    <a href="https://github.com/vinzify/Agent-Session-Hub/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square" alt="License: MIT"></a>
   </p>
 </div>
 
 Agent Session Hub gives Codex CLI and Claude Code a global session browser. Instead of opening a project first and then trying to remember the right resume command, you can launch one command, search every session on your machine, preview context, and jump back into the right folder immediately.
 
-The GitHub repository may still be named `Codex-Session-Hub`, but the runtime, module, config, and install folder names now use Agent Session Hub branding.
+The GitHub repository is `Agent-Session-Hub`, and the runtime, module, config, and install folder names now use Agent Session Hub branding.
 
 ## Why It Exists
 
@@ -46,7 +46,7 @@ Windows PowerShell 7+:
 1. Install:
 
 ```powershell
-irm https://raw.githubusercontent.com/vinzify/Codex-Session-Hub/master/install.ps1 | iex
+irm https://raw.githubusercontent.com/vinzify/Agent-Session-Hub/master/install.ps1 | iex
 ```
 
 2. Reload your PowerShell profile:
@@ -72,7 +72,7 @@ macOS / Linux terminal:
 1. Install:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/vinzify/Codex-Session-Hub/master/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/vinzify/Agent-Session-Hub/master/install.sh | sh
 ```
 
 2. Reload your shell:
@@ -118,7 +118,7 @@ Install `fzf`:
 Recommended on Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/vinzify/Codex-Session-Hub/master/install.ps1 | iex
+irm https://raw.githubusercontent.com/vinzify/Agent-Session-Hub/master/install.ps1 | iex
 ```
 
 Then reload your shell:
@@ -137,7 +137,7 @@ clx doctor
 Recommended on macOS / Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/vinzify/Codex-Session-Hub/master/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/vinzify/Agent-Session-Hub/master/install.sh | sh
 ```
 
 Then reload your shell profile:
@@ -162,15 +162,15 @@ Default install locations:
 From source:
 
 ```powershell
-git clone https://github.com/vinzify/Codex-Session-Hub.git
-cd Codex-Session-Hub
+git clone https://github.com/vinzify/Agent-Session-Hub.git
+cd Agent-Session-Hub
 pwsh -File .\install.ps1
 . $PROFILE
 ```
 
 ```sh
-git clone https://github.com/vinzify/Codex-Session-Hub.git
-cd Codex-Session-Hub
+git clone https://github.com/vinzify/Agent-Session-Hub.git
+cd Agent-Session-Hub
 ./install.sh
 source ~/.zprofile
 ```
@@ -178,11 +178,11 @@ source ~/.zprofile
 Uninstall:
 
 ```powershell
-irm https://raw.githubusercontent.com/vinzify/Codex-Session-Hub/master/uninstall.ps1 | iex
+irm https://raw.githubusercontent.com/vinzify/Agent-Session-Hub/master/uninstall.ps1 | iex
 ```
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/vinzify/Codex-Session-Hub/master/uninstall.sh | sh
+curl -fsSL https://raw.githubusercontent.com/vinzify/Agent-Session-Hub/master/uninstall.sh | sh
 ```
 
 ## Usage
@@ -209,7 +209,7 @@ Quick examples:
 
 ```powershell
 csx
-csx browse repo:Codex-Session-Hub
+csx browse repo:Agent-Session-Hub
 csx browse branch:feature/session-hub
 csx browse title:installer
 csx rename 019d12c0 --name "Release prep"
