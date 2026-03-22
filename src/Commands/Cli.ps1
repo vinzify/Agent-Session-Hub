@@ -4,20 +4,85 @@ function Resolve-CshSelectedSessions {
         [Parameter(Mandatory = $true)][string[]]$SessionIds
     )
 
-    $resolved = foreach ($sessionId in $SessionIds) {
+    $resolved = New-Object 'System.Collections.Generic.List[object]'
+    $seenSessionIds = @{}
+
+    foreach ($sessionId in $SessionIds) {
         if ($sessionId -match '^S:(.+)$') {
             $sessionId = $Matches[1]
-        } elseif ($sessionId -match '^[PW]:') {
+        } elseif ($sessionId -match '^W:([A-Za-z0-9+/=]+)$') {
+            $workspaceKey = ''
+            try {
+                $workspaceKey = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Matches[1]))
+            } catch {
+                $workspaceKey = ''
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($workspaceKey)) {
+                foreach ($session in @($AllSessions | Where-Object { $_.GroupKey -eq $workspaceKey })) {
+                    if (-not $seenSessionIds.ContainsKey($session.SessionId)) {
+                        [void]$resolved.Add($session)
+                        $seenSessionIds[$session.SessionId] = $true
+                    }
+                }
+            }
+
+            continue
+        } elseif ($sessionId -match '^P:') {
             continue
         }
 
         $session = Find-CshSession -Sessions $AllSessions -SessionId $sessionId
-        if ($session) {
-            $session
+        if ($session -and -not $seenSessionIds.ContainsKey($session.SessionId)) {
+            [void]$resolved.Add($session)
+            $seenSessionIds[$session.SessionId] = $true
         }
     }
 
-    return @($resolved)
+    return $resolved.ToArray()
+}
+
+function Get-CshDeleteConfirmationLines {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Sessions
+    )
+
+    $sessions = @($Sessions)
+    $workspaceLabels = @($sessions | ForEach-Object { [string]$_.WorkspaceLabel } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+    $workspaceText = if ($workspaceLabels.Count -eq 1) {
+        $workspaceLabels[0]
+    } elseif ($workspaceLabels.Count -gt 1) {
+        '{0} workspaces' -f $workspaceLabels.Count
+    } else {
+        '{0} sessions' -f $sessions.Count
+    }
+
+    $titleLines = @($sessions | Select-Object -First 2 | ForEach-Object {
+        '  - #{0} {1}' -f $_.DisplayNumber, (Compress-CshText -Text $_.DisplayTitle -MaxLength 72)
+    })
+
+    if ($sessions.Count -gt 2) {
+        $titleLines += '  - ... and {0} more' -f ($sessions.Count - 2)
+    }
+
+    return @(
+        'Delete {0} session{1}' -f $sessions.Count, $(if ($sessions.Count -eq 1) { '' } else { 's' })
+        'Workspace: {0}' -f $workspaceText
+        'Targets:'
+    ) + $titleLines
+}
+
+function Confirm-CshDeleteSelection {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Sessions
+    )
+
+    foreach ($line in @(Get-CshDeleteConfirmationLines -Sessions $Sessions)) {
+        Write-Host $line
+    }
+
+    $response = Read-Host 'Confirm delete? [y/N]'
+    return [string]$response -match '^(y|yes)$'
 }
 
 function Invoke-CshBrowseCommand {
@@ -61,6 +126,10 @@ function Invoke-CshBrowseCommand {
                 return
             }
             'ctrl-d' {
+                if (-not (Confirm-CshDeleteSelection -Sessions $selectedSessions)) {
+                    continue
+                }
+
                 [void]@(Remove-CshSessions -Sessions $selectedSessions -Index $index)
                 continue
             }

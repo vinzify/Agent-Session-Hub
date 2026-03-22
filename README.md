@@ -177,6 +177,7 @@ Browser behavior:
 - Sessions are grouped by workspace context, not only by raw folder path.
 - Git-backed workspaces show repo and branch context in both the list and preview.
 - Different worktrees in the same repo are separated using repo + branch + working directory identity behind the scenes.
+- Selecting a workspace header and pressing `Ctrl-D` deletes every session in that workspace after confirmation.
 
 Search filters:
 - Text query: folder or repo name

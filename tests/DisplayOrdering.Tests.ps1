@@ -75,5 +75,35 @@ Describe 'Display ordering' {
         $lines.Count | Should -Be 2
         $lines[0] | Should -Match 'branch:term'
         $lines[1] | Should -Match 'Ctrl-D delete'
+        $lines[1] | Should -Match 'confirm'
+    }
+
+    It 'resolves a workspace row to every session in that workspace' {
+        $workspaceKey = 'platform|feature-a|d:\code\platform-a\src'
+        $workspaceRow = New-CshWorkspaceRowKey -WorkspaceKey $workspaceKey
+        $sessions = @(
+            [pscustomobject]@{ SessionId='1'; GroupKey=$workspaceKey; WorkspaceLabel='platform @ feature-a / src' },
+            [pscustomobject]@{ SessionId='2'; GroupKey=$workspaceKey; WorkspaceLabel='platform @ feature-a / src' },
+            [pscustomobject]@{ SessionId='3'; GroupKey='platform|feature-b|d:\code\platform-b\src'; WorkspaceLabel='platform @ feature-b / src' }
+        )
+
+        $resolved = @(Resolve-CshSelectedSessions -AllSessions $sessions -SessionIds @($workspaceRow))
+        $resolved.Count | Should -Be 2
+        @($resolved | Select-Object -ExpandProperty SessionId) | Should -Be @('1', '2')
+    }
+
+    It 'builds delete confirmation lines for workspace deletes' {
+        $sessions = @(
+            [pscustomobject]@{ SessionId='1'; DisplayNumber=5; WorkspaceLabel='platform @ feature-a / src'; DisplayTitle='First title' },
+            [pscustomobject]@{ SessionId='2'; DisplayNumber=6; WorkspaceLabel='platform @ feature-a / src'; DisplayTitle='Second title' },
+            [pscustomobject]@{ SessionId='3'; DisplayNumber=7; WorkspaceLabel='platform @ feature-a / src'; DisplayTitle='Third title' }
+        )
+
+        $lines = @(Get-CshDeleteConfirmationLines -Sessions $sessions)
+        $lines[0] | Should -Be 'Delete 3 sessions'
+        $lines[1] | Should -Be 'Workspace: platform @ feature-a / src'
+        $lines[3] | Should -Match '#5 First title'
+        $lines[4] | Should -Match '#6 Second title'
+        $lines[5] | Should -Be '  - ... and 1 more'
     }
 }

@@ -85,7 +85,7 @@ function Get-CshQueryCommand {
 function Get-CshBrowserHeader {
     return @(
         'Find: text folder/repo | # number | title:term | repo:term | branch:term'
-        'Keys: Enter open | Tab mark | Ctrl-E rename | Ctrl-R reset | Ctrl-D delete'
+        'Keys: Enter open | Tab mark | Ctrl-E rename | Ctrl-R reset | Ctrl-D delete(confirm)'
     ) -join "`n"
 }
 
