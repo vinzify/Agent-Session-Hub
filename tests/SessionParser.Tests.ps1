@@ -170,7 +170,14 @@ Describe 'Read-CshSessionFile git metadata' {
             Set-Content -Path $sessionFile -Value $meta -Encoding utf8
 
             $session = Read-CshSessionFile -File (Get-Item $sessionFile) -Index (New-CshIndex) -GitContextCache @{}
-            $session.RepoRoot | Should -Be (Normalize-CshPath $repoRoot)
+            $expectedRepoRoot = Normalize-CshPath $repoRoot
+            $actualRepoRoot = [string]$session.RepoRoot
+            if (-not $IsWindows) {
+                $expectedRepoRoot = $expectedRepoRoot -replace '^/private', ''
+                $actualRepoRoot = $actualRepoRoot -replace '^/private', ''
+            }
+
+            $actualRepoRoot | Should -Be $expectedRepoRoot
             $session.ProjectPath | Should -Be (Normalize-CshPath $workDir)
             $session.BranchDisplay | Should -Be 'feature/session-hub'
             $session.WorkspaceKey | Should -Be (Get-CshWorkspaceKey -RepoRoot (Normalize-CshPath $repoRoot) -BranchName 'feature/session-hub' -ProjectPath (Normalize-CshPath $workDir))
