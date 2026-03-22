@@ -11,7 +11,7 @@
 
 - Keep files focused and modular.
 - Add tests for session parsing, ordering, and metadata changes.
-- Avoid changing Codex session files except for explicit delete operations.
+- Avoid changing provider session files except for explicit supported delete operations.
 
 ## Tests
 

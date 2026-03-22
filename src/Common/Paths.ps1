@@ -3,15 +3,21 @@ function Get-CshProjectRoot {
 }
 
 function Get-CshDefaultSessionRoot {
-    return (Join-Path $HOME '.codex\sessions')
+    param([string]$Provider = 'codex')
+
+    return [string](Get-CshProvider -Provider $Provider).DefaultSessionRoot
 }
 
 function Get-CshSessionRoot {
-    if ($env:CODEX_SESSION_HUB_SESSION_ROOT) {
-        return $env:CODEX_SESSION_HUB_SESSION_ROOT
+    param([string]$Provider = 'codex')
+
+    $providerConfig = Get-CshProvider -Provider $Provider
+    $override = [string][Environment]::GetEnvironmentVariable([string]$providerConfig.SessionRootEnv)
+    if (-not [string]::IsNullOrWhiteSpace($override)) {
+        return $override
     }
 
-    return (Get-CshDefaultSessionRoot)
+    return (Get-CshDefaultSessionRoot -Provider $Provider)
 }
 
 function Get-CshConfigRoot {
@@ -20,6 +26,14 @@ function Get-CshConfigRoot {
     }
 
     if ($IsWindows) {
+        return (Join-Path $env:APPDATA 'AgentSessionHub')
+    }
+
+    return (Join-Path $HOME '.config/agent-session-hub')
+}
+
+function Get-CshLegacyConfigRoot {
+    if ($IsWindows) {
         return (Join-Path $env:APPDATA 'CodexSessionHub')
     }
 
@@ -27,19 +41,35 @@ function Get-CshConfigRoot {
 }
 
 function Get-CshIndexPath {
-    return (Join-Path (Get-CshConfigRoot) 'index.json')
+    param([string]$Provider = 'codex')
+
+    $providerConfig = Get-CshProvider -Provider $Provider
+    return (Join-Path (Get-CshConfigRoot) $providerConfig.IndexFileName)
+}
+
+function Get-CshLegacyIndexPath {
+    param([string]$Provider = 'codex')
+
+    $providerConfig = Get-CshProvider -Provider $Provider
+    return (Join-Path (Get-CshLegacyConfigRoot) $providerConfig.IndexFileName)
 }
 
 function Get-CshShimPath {
-    return (Join-Path (Get-CshProjectRoot) 'bin/csx.ps1')
+    param([string]$Provider = 'codex')
+
+    return (Join-Path (Get-CshProjectRoot) ('bin/{0}.ps1' -f (Get-CshProviderLauncherName -Provider $Provider)))
 }
 
 function Get-CshQueryShimPath {
-    return (Join-Path (Get-CshProjectRoot) 'bin/csx-query.cmd')
+    param([string]$Provider = 'codex')
+
+    return (Join-Path (Get-CshProjectRoot) ('bin/{0}-query.cmd' -f (Get-CshProviderLauncherName -Provider $Provider)))
 }
 
 function Get-CshPreviewShimPath {
-    return (Join-Path (Get-CshProjectRoot) 'bin/csx-preview.cmd')
+    param([string]$Provider = 'codex')
+
+    return (Join-Path (Get-CshProjectRoot) ('bin/{0}-preview.cmd' -f (Get-CshProviderLauncherName -Provider $Provider)))
 }
 
 function Get-CshProfilePath {

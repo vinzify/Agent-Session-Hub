@@ -7,10 +7,10 @@ $ErrorActionPreference = 'Stop'
 
 function Get-CshDefaultInstallRoot {
     if ($IsWindows) {
-        return (Join-Path $env:LOCALAPPDATA 'CodexSessionHub')
+        return (Join-Path $env:LOCALAPPDATA 'AgentSessionHub')
     }
 
-    return (Join-Path $HOME '.local/share/codex-session-hub')
+    return (Join-Path $HOME '.local/share/agent-session-hub')
 }
 
 function Get-CshProfilePath {
@@ -20,7 +20,7 @@ function Get-CshProfilePath {
 function Uninstall-CshShellIntegration {
     param([Parameter(Mandatory = $true)][string]$ResolvedInstallRoot)
 
-    $modulePath = Join-Path $ResolvedInstallRoot 'src/CodexSessionHub.psd1'
+    $modulePath = Join-Path $ResolvedInstallRoot 'src/AgentSessionHub.psd1'
     if (-not (Test-Path $modulePath)) {
         return $false
     }
@@ -36,7 +36,7 @@ $resolvedInstallRoot = if ($InstallRoot) { $InstallRoot } else { Get-CshDefaultI
 
 if (Test-Path $resolvedInstallRoot) {
     Remove-Item -LiteralPath $resolvedInstallRoot -Recurse -Force
-    Write-Host "Removed Codex Session Hub from $resolvedInstallRoot"
+    Write-Host "Removed Agent Session Hub from $resolvedInstallRoot"
 } else {
     Write-Host "Install root not found at $resolvedInstallRoot"
 }

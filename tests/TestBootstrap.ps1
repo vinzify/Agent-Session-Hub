@@ -3,12 +3,14 @@ $script:ProjectRoot = Split-Path -Parent $script:TestRoot
 $script:ModuleRoot = Join-Path $script:ProjectRoot 'src'
 
 $loadOrder = @(
+    'Common/Providers.ps1'
     'Common/Paths.ps1'
     'Common/Formatting.ps1'
     'Metadata/IndexStore.ps1'
     'Sessions/Parser.ps1'
     'Fzf/Browser.ps1'
     'Runtime/Codex.ps1'
+    'Runtime/Claude.ps1'
     'Commands/Cli.ps1'
 )
 

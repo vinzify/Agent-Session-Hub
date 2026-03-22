@@ -5,4 +5,4 @@ param(
 
 $modulePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'src/AgentSessionHub.psd1'
 Import-Module $modulePath -Force
-Invoke-CsxCli -Arguments $Arguments
+Invoke-ClxCli -Arguments $Arguments

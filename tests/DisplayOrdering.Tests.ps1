@@ -5,8 +5,8 @@ Describe 'Display ordering' {
 
     It 'returns sessions in grouped display order' {
         $sessions = @(
-            [pscustomobject]@{ SessionId='2'; Timestamp=[datetimeoffset]'2026-03-01'; TimestampText='2026-03-01 00:00'; LastUpdated=[datetimeoffset]'2026-03-01'; LastUpdatedText='2026-03-01 00:00'; LastUpdatedAge='1d ago'; ProjectKey='b'; ProjectName='B'; ProjectPath='B'; GroupKey='repo-b|main|b'; WorkspaceKey='repo-b|main|b'; WorkspaceLabel='repo-b @ main'; FilePath=''; ProjectExists=$true; Alias=''; Preview=''; DisplayTitle='B1' },
-            [pscustomobject]@{ SessionId='1'; Timestamp=[datetimeoffset]'2026-03-02'; TimestampText='2026-03-02 00:00'; LastUpdated=[datetimeoffset]'2026-03-02'; LastUpdatedText='2026-03-02 00:00'; LastUpdatedAge='1h ago'; ProjectKey='a'; ProjectName='A'; ProjectPath='A'; GroupKey='repo-a|feature|a'; WorkspaceKey='repo-a|feature|a'; WorkspaceLabel='repo-a @ feature'; FilePath=''; ProjectExists=$true; Alias=''; Preview=''; DisplayTitle='A1' }
+            [pscustomobject]@{ Provider='codex'; ProviderLabel='Codex'; SupportsDelete=$true; SessionId='2'; Timestamp=[datetimeoffset]'2026-03-01'; TimestampText='2026-03-01 00:00'; LastUpdated=[datetimeoffset]'2026-03-01'; LastUpdatedText='2026-03-01 00:00'; LastUpdatedAge='1d ago'; ProjectKey='b'; ProjectName='B'; ProjectPath='B'; GroupKey='repo-b|main|b'; WorkspaceKey='repo-b|main|b'; WorkspaceLabel='repo-b @ main'; FilePath=''; ProjectExists=$true; Alias=''; Preview=''; DisplayTitle='B1' },
+            [pscustomobject]@{ Provider='codex'; ProviderLabel='Codex'; SupportsDelete=$true; SessionId='1'; Timestamp=[datetimeoffset]'2026-03-02'; TimestampText='2026-03-02 00:00'; LastUpdated=[datetimeoffset]'2026-03-02'; LastUpdatedText='2026-03-02 00:00'; LastUpdatedAge='1h ago'; ProjectKey='a'; ProjectName='A'; ProjectPath='A'; GroupKey='repo-a|feature|a'; WorkspaceKey='repo-a|feature|a'; WorkspaceLabel='repo-a @ feature'; FilePath=''; ProjectExists=$true; Alias=''; Preview=''; DisplayTitle='A1' }
         )
 
         $ordered = @(Get-CshDisplaySessions -Sessions $sessions)
@@ -19,23 +19,25 @@ Describe 'Display ordering' {
 
     It 'encodes row identity keys for sessions and workspaces' {
         $session = [pscustomobject]@{
-            SessionId='abc'; DisplayNumber=7; TimestampText='2026-03-02 00:00'; ProjectName='Desktop'; WorkspaceLabel='repo @ feature'; DisplayTitle='Title'; ProjectPath='C:\Users\twinr\Desktop'; Preview='Preview'
+            Provider='codex'; SessionId='abc'; DisplayNumber=7; TimestampText='2026-03-02 00:00'; ProjectName='Desktop'; WorkspaceLabel='repo @ feature'; DisplayTitle='Title'; ProjectPath='C:\Users\twinr\Desktop'; Preview='Preview'
         }
         $sessionRow = ConvertTo-CshFzfRow -Session $session
 
-        $sessionRow | Should -Match '^S:abc\t'
-        (New-CshWorkspaceRowKey -WorkspaceKey 'repo|feature|desktop') | Should -Match '^W:'
+        $sessionRow | Should -Match '^S:codex:abc\t'
+        (New-CshWorkspaceRowKey -WorkspaceKey 'repo|feature|desktop' -Provider 'claude') | Should -Match '^W:claude:'
     }
 
     It 'creates separate workspace headers for different worktree keys' {
         $sessions = @(
             [pscustomobject]@{
+                Provider='codex'
                 SessionId='1'; DisplayNumber=1; Timestamp=[datetimeoffset]'2026-03-02'; TimestampText='2026-03-02 00:00'
                 LastUpdated=[datetimeoffset]'2026-03-02'; LastUpdatedText='2026-03-02 00:00'; LastUpdatedAge='1h ago'
                 ProjectName='src'; WorkspaceLabel='platform @ feature-a / src'; ProjectPath='D:\code\platform-a\src'; GroupKey='platform|feature-a|d:\code\platform-a\src'; ProjectKey='d:\code\platform-a\src'
                 DisplayTitle='One'; Preview='Preview'
             },
             [pscustomobject]@{
+                Provider='codex'
                 SessionId='2'; DisplayNumber=2; Timestamp=[datetimeoffset]'2026-03-01'; TimestampText='2026-03-01 00:00'
                 LastUpdated=[datetimeoffset]'2026-03-01'; LastUpdatedText='2026-03-01 00:00'; LastUpdatedAge='1d ago'
                 ProjectName='src'; WorkspaceLabel='platform @ feature-b / src'; ProjectPath='D:\code\platform-b\src'; GroupKey='platform|feature-b|d:\code\platform-b\src'; ProjectKey='d:\code\platform-b\src'
@@ -49,7 +51,7 @@ Describe 'Display ordering' {
     }
 
     It 'builds an fzf query command with a quoted query placeholder' {
-        $command = Get-CshQueryCommand
+        $command = Get-CshQueryCommand -Provider 'codex'
 
         if ($IsWindows) {
             $command | Should -Match 'csx-query\.cmd"$'
@@ -59,17 +61,17 @@ Describe 'Display ordering' {
     }
 
     It 'builds an fzf preview command with session and project placeholders' {
-        $command = Get-CshPreviewCommand
+        $command = Get-CshPreviewCommand -Provider 'claude'
 
         if ($IsWindows) {
-            $command | Should -Match 'csx-preview\.cmd" \{\}$'
+            $command | Should -Match 'clx-preview\.cmd" \{\}$'
         } else {
             $command | Should -Match '__preview \{\}$'
         }
     }
 
     It 'builds a compact two-line browser header' {
-        $header = Get-CshBrowserHeader
+        $header = Get-CshBrowserHeader -Provider 'codex'
         $lines = @($header -split "`n")
 
         $lines.Count | Should -Be 2
@@ -80,11 +82,11 @@ Describe 'Display ordering' {
 
     It 'resolves a workspace row to every session in that workspace' {
         $workspaceKey = 'platform|feature-a|d:\code\platform-a\src'
-        $workspaceRow = New-CshWorkspaceRowKey -WorkspaceKey $workspaceKey
+        $workspaceRow = New-CshWorkspaceRowKey -WorkspaceKey $workspaceKey -Provider 'codex'
         $sessions = @(
-            [pscustomobject]@{ SessionId='1'; GroupKey=$workspaceKey; WorkspaceLabel='platform @ feature-a / src' },
-            [pscustomobject]@{ SessionId='2'; GroupKey=$workspaceKey; WorkspaceLabel='platform @ feature-a / src' },
-            [pscustomobject]@{ SessionId='3'; GroupKey='platform|feature-b|d:\code\platform-b\src'; WorkspaceLabel='platform @ feature-b / src' }
+            [pscustomobject]@{ Provider='codex'; SessionId='1'; GroupKey=$workspaceKey; WorkspaceLabel='platform @ feature-a / src' },
+            [pscustomobject]@{ Provider='codex'; SessionId='2'; GroupKey=$workspaceKey; WorkspaceLabel='platform @ feature-a / src' },
+            [pscustomobject]@{ Provider='codex'; SessionId='3'; GroupKey='platform|feature-b|d:\code\platform-b\src'; WorkspaceLabel='platform @ feature-b / src' }
         )
 
         $resolved = @(Resolve-CshSelectedSessions -AllSessions $sessions -SessionIds @($workspaceRow))
@@ -105,5 +107,12 @@ Describe 'Display ordering' {
         $lines[3] | Should -Match '#5 First title'
         $lines[4] | Should -Match '#6 Second title'
         $lines[5] | Should -Be '  - ... and 1 more'
+    }
+
+    It 'omits delete from the Claude browser header' {
+        $header = Get-CshBrowserHeader -Provider 'claude'
+        $lines = @($header -split "`n")
+
+        $lines[1] | Should -Not -Match 'Ctrl-D'
     }
 }

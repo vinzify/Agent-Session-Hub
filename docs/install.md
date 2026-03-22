@@ -1,5 +1,11 @@
 # Install Guide
 
+The GitHub repository may still be `Codex-Session-Hub`, but the installed product now uses Agent Session Hub naming with two entrypoints:
+- `csx` for Codex sessions
+- `clx` for Claude sessions
+
+PowerShell 7+ is the runtime requirement, but you can launch the tool from PowerShell, zsh, or bash once `pwsh` is available.
+
 ## Recommended
 
 ### Windows PowerShell 7+
@@ -15,6 +21,7 @@ Then reload your shell:
 ```powershell
 . $PROFILE
 csx doctor
+clx doctor
 ```
 
 ### macOS / Linux terminal
@@ -35,7 +42,8 @@ If you use bash, reload `~/.bash_profile` or `~/.profile` instead.
 
 1. Install PowerShell 7 as `pwsh`.
 2. Install `fzf`.
-3. Make sure `codex` is available in `PATH`.
+3. Make sure `codex` is available in `PATH` if you want `csx`.
+4. Make sure `claude` is available in `PATH` if you want `clx`.
 
 ## From Source
 
@@ -43,3 +51,4 @@ If you use bash, reload `~/.bash_profile` or `~/.profile` instead.
 2. On Windows PowerShell, run `pwsh -File .\install.ps1`.
 3. On macOS/Linux, run `./install.sh`.
 4. Reload your shell profile.
+5. Run `csx doctor` and `clx doctor`.

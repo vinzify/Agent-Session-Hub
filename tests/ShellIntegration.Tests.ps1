@@ -16,8 +16,18 @@ Describe 'shell integration helpers' {
         $content | Should -Match '# >>> Codex Session Hub >>>'
         $content | Should -Match 'export PATH=".+:\$PATH"'
         $content | Should -Match 'csx\(\)'
+        $content | Should -Match 'clx\(\)'
         $content | Should -Match 'browse\)'
         $content | Should -Match '__select'
+    }
+
+    It 'renders a PowerShell profile block with both commands' {
+        $content = Get-CshPowerShellProfileBlock
+
+        $content | Should -Match 'function csx'
+        $content | Should -Match 'function clx'
+        $content | Should -Match 'Invoke-CsxCli'
+        $content | Should -Match 'Invoke-ClxCli'
     }
 
     It 'chooses the zsh profile on non-Windows zsh shells' -Skip:$IsWindows {

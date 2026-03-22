@@ -5,7 +5,7 @@ REPOSITORY="${REPOSITORY:-vinzify/Codex-Session-Hub}"
 REF="${REF:-master}"
 
 if ! command -v pwsh >/dev/null 2>&1; then
-  echo "Codex Session Hub requires PowerShell 7 (pwsh) in PATH." >&2
+  echo "Agent Session Hub requires PowerShell 7 (pwsh) in PATH." >&2
   exit 1
 fi
 
@@ -14,7 +14,7 @@ if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/uninstall.ps1" ]; then
   exec pwsh -NoProfile -File "${SCRIPT_DIR}/uninstall.ps1" "$@"
 fi
 
-TMP_DIR="$(mktemp -d 2>/dev/null || mktemp -d -t codex-session-hub-uninstall)"
+TMP_DIR="$(mktemp -d 2>/dev/null || mktemp -d -t agent-session-hub-uninstall)"
 cleanup() {
   rm -rf "${TMP_DIR}"
 }

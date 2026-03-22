@@ -5,12 +5,38 @@ function Resolve-CshSelectedSessions {
     )
 
     $resolved = New-Object 'System.Collections.Generic.List[object]'
-    $seenSessionIds = @{}
+    $seenSessionKeys = @{}
 
     foreach ($sessionId in $SessionIds) {
-        if ($sessionId -match '^S:(.+)$') {
+        $provider = ''
+        if ($sessionId -match '^S:([^:]+):(.+)$') {
+            $provider = Resolve-CshProviderName -Provider $Matches[1]
+            $sessionId = $Matches[2]
+        } elseif ($sessionId -match '^S:(.+)$') {
+            $provider = 'codex'
             $sessionId = $Matches[1]
+        } elseif ($sessionId -match '^W:([^:]+):([A-Za-z0-9+/=]+)$') {
+            $provider = Resolve-CshProviderName -Provider $Matches[1]
+            $workspaceKey = ''
+            try {
+                $workspaceKey = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Matches[2]))
+            } catch {
+                $workspaceKey = ''
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($workspaceKey)) {
+                foreach ($session in @($AllSessions | Where-Object { $_.Provider -eq $provider -and $_.GroupKey -eq $workspaceKey })) {
+                    $sessionKey = '{0}:{1}' -f $session.Provider, $session.SessionId
+                    if (-not $seenSessionKeys.ContainsKey($sessionKey)) {
+                        [void]$resolved.Add($session)
+                        $seenSessionKeys[$sessionKey] = $true
+                    }
+                }
+            }
+
+            continue
         } elseif ($sessionId -match '^W:([A-Za-z0-9+/=]+)$') {
+            $provider = 'codex'
             $workspaceKey = ''
             try {
                 $workspaceKey = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Matches[1]))
@@ -19,10 +45,11 @@ function Resolve-CshSelectedSessions {
             }
 
             if (-not [string]::IsNullOrWhiteSpace($workspaceKey)) {
-                foreach ($session in @($AllSessions | Where-Object { $_.GroupKey -eq $workspaceKey })) {
-                    if (-not $seenSessionIds.ContainsKey($session.SessionId)) {
+                foreach ($session in @($AllSessions | Where-Object { $_.Provider -eq $provider -and $_.GroupKey -eq $workspaceKey })) {
+                    $sessionKey = '{0}:{1}' -f $session.Provider, $session.SessionId
+                    if (-not $seenSessionKeys.ContainsKey($sessionKey)) {
                         [void]$resolved.Add($session)
-                        $seenSessionIds[$session.SessionId] = $true
+                        $seenSessionKeys[$sessionKey] = $true
                     }
                 }
             }
@@ -32,10 +59,13 @@ function Resolve-CshSelectedSessions {
             continue
         }
 
-        $session = Find-CshSession -Sessions $AllSessions -SessionId $sessionId
-        if ($session -and -not $seenSessionIds.ContainsKey($session.SessionId)) {
-            [void]$resolved.Add($session)
-            $seenSessionIds[$session.SessionId] = $true
+        $session = Find-CshSession -Sessions $AllSessions -SessionId $sessionId -Provider $provider
+        if ($session) {
+            $sessionKey = '{0}:{1}' -f $session.Provider, $session.SessionId
+            if (-not $seenSessionKeys.ContainsKey($sessionKey)) {
+                [void]$resolved.Add($session)
+                $seenSessionKeys[$sessionKey] = $true
+            }
         }
     }
 
@@ -89,16 +119,18 @@ function Invoke-CshBrowseCommand {
     param(
         [string]$Query,
         [switch]$ShellMode,
-        [switch]$EmitSelection
+        [switch]$EmitSelection,
+        [string]$Provider = 'codex'
     )
 
+    $providerName = Resolve-CshProviderName -Provider $Provider
     $initialQuery = $Query
 
     while ($true) {
-        $index = Get-CshIndex
-        $sessions = @(Get-CshSessions -Index $index)
+        $index = Get-CshIndex -Provider $providerName
+        $sessions = @(Get-CshSessions -Index $index -Provider $providerName)
         $displaySessions = @(Get-CshDisplaySessions -Sessions $sessions)
-        $result = Invoke-CshFzfBrowser -Sessions $sessions -InitialQuery $initialQuery
+        $result = Invoke-CshFzfBrowser -Sessions $sessions -InitialQuery $initialQuery -Provider $providerName
         $initialQuery = ''
 
         if (-not $result) {
@@ -122,26 +154,30 @@ function Invoke-CshBrowseCommand {
                     return
                 }
 
-                Resume-CshSession -Session $selectedSessions[0] -ShellMode:$ShellMode
+                Resume-CshSession -Session $selectedSessions[0] -ShellMode:$ShellMode -Provider $providerName
                 return
             }
             'ctrl-d' {
+                if (-not (Test-CshProviderSupportsDelete -Provider $providerName)) {
+                    throw "{0} session delete is not supported." -f (Get-CshProviderDisplayName -Provider $providerName)
+                }
+
                 if (-not (Confirm-CshDeleteSelection -Sessions $selectedSessions)) {
                     continue
                 }
 
-                [void]@(Remove-CshSessions -Sessions $selectedSessions -Index $index)
+                [void]@(Remove-CshSessions -Sessions $selectedSessions -Index $index -Provider $providerName)
                 continue
             }
             'ctrl-e' {
                 $target = $selectedSessions[0]
                 $alias = Read-Host ('Rename title for #{0} in {1} (blank resets)' -f $target.DisplayNumber, $target.ProjectName)
-                Rename-CshSession -Session $target -Index $index -Alias $alias
+                Rename-CshSession -Session $target -Index $index -Alias $alias -Provider $providerName
                 continue
             }
             'ctrl-r' {
                 $target = $selectedSessions[0]
-                Rename-CshSession -Session $target -Index $index -Alias ''
+                Rename-CshSession -Session $target -Index $index -Alias '' -Provider $providerName
                 continue
             }
             default {
@@ -154,45 +190,59 @@ function Invoke-CshBrowseCommand {
 function Invoke-CshRenameCommand {
     param(
         [Parameter(Mandatory = $true)][string]$SessionId,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Alias
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Alias,
+        [string]$Provider = 'codex'
     )
 
-    $index = Get-CshIndex
-    $sessions = @(Get-CshSessions -Index $index)
-    $session = Find-CshSession -Sessions $sessions -SessionId $SessionId
+    $providerName = Resolve-CshProviderName -Provider $Provider
+    $index = Get-CshIndex -Provider $providerName
+    $sessions = @(Get-CshSessions -Index $index -Provider $providerName)
+    $session = Find-CshSession -Sessions $sessions -SessionId $SessionId -Provider $providerName
     if (-not $session) {
         throw "Session not found: $SessionId"
     }
 
-    Rename-CshSession -Session $session -Index $index -Alias $Alias
+    Rename-CshSession -Session $session -Index $index -Alias $Alias -Provider $providerName
     Write-Output ('Updated alias for {0}' -f $session.SessionId)
 }
 
 function Invoke-CshResetCommand {
-    param([Parameter(Mandatory = $true)][string]$SessionId)
+    param(
+        [Parameter(Mandatory = $true)][string]$SessionId,
+        [string]$Provider = 'codex'
+    )
 
-    $index = Get-CshIndex
-    $sessions = @(Get-CshSessions -Index $index)
-    $session = Find-CshSession -Sessions $sessions -SessionId $SessionId
+    $providerName = Resolve-CshProviderName -Provider $Provider
+    $index = Get-CshIndex -Provider $providerName
+    $sessions = @(Get-CshSessions -Index $index -Provider $providerName)
+    $session = Find-CshSession -Sessions $sessions -SessionId $SessionId -Provider $providerName
     if (-not $session) {
         throw "Session not found: $SessionId"
     }
 
-    Rename-CshSession -Session $session -Index $index -Alias ''
+    Rename-CshSession -Session $session -Index $index -Alias '' -Provider $providerName
     Write-Output ('Reset alias for {0}' -f $session.SessionId)
 }
 
 function Invoke-CshDeleteCommand {
-    param([Parameter(Mandatory = $true)][string[]]$SessionIds)
+    param(
+        [Parameter(Mandatory = $true)][string[]]$SessionIds,
+        [string]$Provider = 'codex'
+    )
 
-    $index = Get-CshIndex
-    $sessions = @(Get-CshSessions -Index $index)
+    $providerName = Resolve-CshProviderName -Provider $Provider
+    if (-not (Test-CshProviderSupportsDelete -Provider $providerName)) {
+        throw "{0} session delete is not supported." -f (Get-CshProviderDisplayName -Provider $providerName)
+    }
+
+    $index = Get-CshIndex -Provider $providerName
+    $sessions = @(Get-CshSessions -Index $index -Provider $providerName)
     $targets = @(Resolve-CshSelectedSessions -AllSessions $sessions -SessionIds $SessionIds)
     if ($targets.Count -eq 0) {
         throw 'No matching sessions found.'
     }
 
-    $results = @(Remove-CshSessions -Sessions $targets -Index $index)
+    $results = @(Remove-CshSessions -Sessions $targets -Index $index -Provider $providerName)
     foreach ($entry in $results) {
         $prefix = if ($entry.Success) { '[deleted]' } else { '[failed]' }
         Write-Output ('{0} {1} {2}' -f $prefix, $entry.SessionId, $entry.Message)
@@ -200,27 +250,41 @@ function Invoke-CshDeleteCommand {
 }
 
 function Show-CshUsage {
-    @(
-        'csx [query]'
-        'csx browse [query]'
-        'csx rename <session-id> --name <alias>'
-        'csx reset <session-id>'
-        'csx delete <session-id...>'
-        'csx doctor'
-        'csx install-shell'
-        'csx uninstall-shell'
-    ) | Write-Output
-}
+    param([string]$Provider = 'codex')
 
-function Invoke-CsxCli {
-    param(
-        [string[]]$Arguments,
-        [switch]$ShellMode
+    $launcherName = Get-CshProviderLauncherName -Provider $Provider
+    $supportsDelete = Test-CshProviderSupportsDelete -Provider $Provider
+    $lines = @(
+        "$launcherName [query]"
+        "$launcherName browse [query]"
+        "$launcherName rename <session-id> --name <alias>"
+        "$launcherName reset <session-id>"
     )
 
+    if ($supportsDelete) {
+        $lines += "$launcherName delete <session-id...>"
+    }
+
+    $lines += @(
+        "$launcherName doctor"
+        "$launcherName install-shell"
+        "$launcherName uninstall-shell"
+    )
+
+    $lines | Write-Output
+}
+
+function Invoke-CshCli {
+    param(
+        [string[]]$Arguments,
+        [switch]$ShellMode,
+        [string]$Provider = 'codex'
+    )
+
+    $providerName = Resolve-CshProviderName -Provider $Provider
     $argsList = @($Arguments)
     if ($argsList.Count -eq 0) {
-        Invoke-CshBrowseCommand -ShellMode:$ShellMode
+        Invoke-CshBrowseCommand -ShellMode:$ShellMode -Provider $providerName
         return
     }
 
@@ -235,9 +299,17 @@ function Invoke-CsxCli {
 
             if ($rest.Count -ge 1) {
                 $rawValue = [string]$rest[0]
-                if ($rawValue -match '^S:([^\s]+)') {
+                if ($rawValue -match '^S:([^:]+):(.+)$') {
+                    $sessionId = $Matches[2]
+                } elseif ($rawValue -match '^S:(.+)$') {
                     $sessionId = $Matches[1]
-                } elseif ($rawValue -match '^W:([A-Za-z0-9+/=]+)') {
+                } elseif ($rawValue -match '^W:([^:]+):([A-Za-z0-9+/=]+)$') {
+                    try {
+                        $workspaceKey = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Matches[2]))
+                    } catch {
+                        $workspaceKey = ''
+                    }
+                } elseif ($rawValue -match '^W:([A-Za-z0-9+/=]+)$') {
                     try {
                         $workspaceKey = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Matches[1]))
                     } catch {
@@ -261,19 +333,19 @@ function Invoke-CsxCli {
                 }
             }
 
-            Write-CshPreview -SessionId $sessionId -WorkspaceKey $workspaceKey -ProjectPath $projectPath
+            Write-CshPreview -SessionId $sessionId -WorkspaceKey $workspaceKey -ProjectPath $projectPath -Provider $providerName
         }
         '__query' {
             $query = if ($rest.Count -gt 0) { $rest -join ' ' } elseif ($env:FZF_QUERY) { $env:FZF_QUERY } else { '' }
-            Write-CshQueryRows -Query $query
+            Write-CshQueryRows -Query $query -Provider $providerName
         }
         '__select' {
             $query = if ($rest.Count -gt 0) { $rest -join ' ' } else { '' }
-            Invoke-CshBrowseCommand -Query $query -EmitSelection
+            Invoke-CshBrowseCommand -Query $query -EmitSelection -Provider $providerName
         }
         'browse' {
             $query = if ($rest.Count -gt 0) { $rest -join ' ' } else { '' }
-            Invoke-CshBrowseCommand -Query $query -ShellMode:$ShellMode
+            Invoke-CshBrowseCommand -Query $query -ShellMode:$ShellMode -Provider $providerName
         }
         'rename' {
             if ($rest.Count -lt 1) {
@@ -286,24 +358,24 @@ function Invoke-CsxCli {
                 throw "rename requires --name <alias>."
             }
 
-            Invoke-CshRenameCommand -SessionId $sessionId -Alias $rest[$nameIndex + 1]
+            Invoke-CshRenameCommand -SessionId $sessionId -Alias $rest[$nameIndex + 1] -Provider $providerName
         }
         'reset' {
             if ($rest.Count -lt 1) {
                 throw 'reset requires a session id.'
             }
 
-            Invoke-CshResetCommand -SessionId $rest[0]
+            Invoke-CshResetCommand -SessionId $rest[0] -Provider $providerName
         }
         'delete' {
             if ($rest.Count -lt 1) {
                 throw 'delete requires at least one session id.'
             }
 
-            Invoke-CshDeleteCommand -SessionIds $rest
+            Invoke-CshDeleteCommand -SessionIds $rest -Provider $providerName
         }
         'doctor' {
-            Invoke-CshDoctor | Format-List
+            Invoke-CshDoctor -Provider $providerName | Format-List
         }
         'install-shell' {
             Install-CshShellIntegration
@@ -312,10 +384,28 @@ function Invoke-CsxCli {
             Uninstall-CshShellIntegration
         }
         'help' {
-            Show-CshUsage
+            Show-CshUsage -Provider $providerName
         }
         default {
-            Invoke-CshBrowseCommand -Query ($argsList -join ' ') -ShellMode:$ShellMode
+            Invoke-CshBrowseCommand -Query ($argsList -join ' ') -ShellMode:$ShellMode -Provider $providerName
         }
     }
+}
+
+function Invoke-CsxCli {
+    param(
+        [string[]]$Arguments,
+        [switch]$ShellMode
+    )
+
+    Invoke-CshCli -Arguments $Arguments -ShellMode:$ShellMode -Provider 'codex'
+}
+
+function Invoke-ClxCli {
+    param(
+        [string[]]$Arguments,
+        [switch]$ShellMode
+    )
+
+    Invoke-CshCli -Arguments $Arguments -ShellMode:$ShellMode -Provider 'claude'
 }

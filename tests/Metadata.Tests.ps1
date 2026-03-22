@@ -20,6 +20,15 @@ Describe 'Index metadata' {
         $index = New-CshIndex
         Set-CshAlias -Index $index -SessionId 'abc' -Alias 'hello'
         Set-CshAlias -Index $index -SessionId 'abc' -Alias ''
-        $index.sessions.ContainsKey('abc') | Should -Be $false
+        (Get-CshIndexProviderBucket -Index $index -Provider 'codex').sessions.ContainsKey('abc') | Should -Be $false
+    }
+
+    It 'scopes aliases per provider' {
+        $index = New-CshIndex
+        Set-CshAlias -Index $index -SessionId 'shared-id' -Alias 'codex alias' -Provider 'codex'
+        Set-CshAlias -Index $index -SessionId 'shared-id' -Alias 'claude alias' -Provider 'claude'
+
+        (Get-CshAlias -Index $index -SessionId 'shared-id' -Provider 'codex') | Should -Be 'codex alias'
+        (Get-CshAlias -Index $index -SessionId 'shared-id' -Provider 'claude') | Should -Be 'claude alias'
     }
 }

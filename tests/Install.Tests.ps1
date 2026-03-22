@@ -10,8 +10,9 @@ Describe 'install.ps1 bootstrap mode' {
             $env:CODEX_SESSION_HUB_SOURCE_ROOT = $projectRoot
             & ([scriptblock]::Create($scriptContent)) -InstallRoot $installRoot -SkipShellIntegration *> $null
 
-            (Test-Path (Join-Path $installRoot 'src/CodexSessionHub.psd1')) | Should -BeTrue
+            (Test-Path (Join-Path $installRoot 'src/AgentSessionHub.psd1')) | Should -BeTrue
             (Test-Path (Join-Path $installRoot 'bin/csx.ps1')) | Should -BeTrue
+            (Test-Path (Join-Path $installRoot 'bin/clx.ps1')) | Should -BeTrue
             (Test-Path (Join-Path $installRoot 'README.md')) | Should -BeTrue
             (Test-Path (Join-Path $installRoot 'install.sh')) | Should -BeTrue
             (Test-Path (Join-Path $installRoot 'uninstall.sh')) | Should -BeTrue

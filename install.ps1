@@ -10,10 +10,10 @@ $ErrorActionPreference = 'Stop'
 
 function Get-CshDefaultInstallRoot {
     if ($IsWindows) {
-        return (Join-Path $env:LOCALAPPDATA 'CodexSessionHub')
+        return (Join-Path $env:LOCALAPPDATA 'AgentSessionHub')
     }
 
-    return (Join-Path $HOME '.local/share/codex-session-hub')
+    return (Join-Path $HOME '.local/share/agent-session-hub')
 }
 
 function Get-CshDefaultFzfHelp {
@@ -31,7 +31,7 @@ function Get-CshDefaultFzfHelp {
 function Test-CshRepoRoot {
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    return (Test-Path (Join-Path $Path 'src/CodexSessionHub.psd1')) -and (Test-Path (Join-Path $Path 'bin/csx.ps1'))
+    return (Test-Path (Join-Path $Path 'src/AgentSessionHub.psd1')) -and (Test-Path (Join-Path $Path 'bin/csx.ps1')) -and (Test-Path (Join-Path $Path 'bin/clx.ps1'))
 }
 
 function Resolve-CshSourceRoot {
@@ -76,7 +76,7 @@ function Resolve-CshSourceRoot {
     }
 
     $archiveUrl = "https://github.com/$Repository/archive/refs/heads/$Ref.zip"
-    $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('codex-session-hub-install-' + [guid]::NewGuid().ToString('N'))
+    $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('agent-session-hub-install-' + [guid]::NewGuid().ToString('N'))
     $archivePath = Join-Path $tempRoot 'source.zip'
     $extractRoot = Join-Path $tempRoot 'extract'
 
@@ -88,7 +88,7 @@ function Resolve-CshSourceRoot {
 
     $repoRoot = Get-ChildItem -Path $extractRoot -Directory | Select-Object -First 1
     if (-not $repoRoot -or -not (Test-CshRepoRoot -Path $repoRoot.FullName)) {
-        throw "Unable to locate Codex Session Hub sources in downloaded archive: $archiveUrl"
+        throw "Unable to locate Agent Session Hub sources in downloaded archive: $archiveUrl"
     }
 
     return [pscustomobject]@{
@@ -123,7 +123,7 @@ function Install-CshPayload {
 
 function Install-CshShellIntegration {
     param([Parameter(Mandatory = $true)][string]$InstalledRoot)
-    $modulePath = Join-Path $InstalledRoot 'src/CodexSessionHub.psd1'
+    $modulePath = Join-Path $InstalledRoot 'src/AgentSessionHub.psd1'
     Import-Module $modulePath -Force
     return @(Invoke-CsxCli -Arguments @('install-shell'))
 }
@@ -146,16 +146,19 @@ function Get-CshPostInstallState {
             Join-Path $HOME '.profile'
         }
     }
-    $modulePath = Join-Path $InstalledRoot 'src/CodexSessionHub.psd1'
+    $modulePath = Join-Path $InstalledRoot 'src/AgentSessionHub.psd1'
     $launcherPath = if ($IsWindows) { '' } else { Join-Path $HOME '.local/bin/csx' }
+    $claudeLauncherPath = if ($IsWindows) { '' } else { Join-Path $HOME '.local/bin/clx' }
 
     [pscustomobject]@{
         ModulePath       = $modulePath
         ProfilePath      = $profilePath
         LauncherPath     = $launcherPath
+        ClaudeLauncherPath = $claudeLauncherPath
         ProfileInstalled = $ProfileInstalled
         FzfAvailable     = [bool](Get-Command fzf -ErrorAction SilentlyContinue)
         CodexAvailable   = [bool](Get-Command codex -ErrorAction SilentlyContinue)
+        ClaudeAvailable  = [bool](Get-Command claude -ErrorAction SilentlyContinue)
     }
 }
 
@@ -173,7 +176,7 @@ try {
     }
     $postInstall = Get-CshPostInstallState -InstalledRoot $resolvedInstallRoot -ProfileInstalled $profileInstalled
 
-    Write-Host "Installed Codex Session Hub to $resolvedInstallRoot"
+    Write-Host "Installed Agent Session Hub to $resolvedInstallRoot"
     Write-Host "Source: $($source.Description)"
 
     if (-not $postInstall.FzfAvailable) {
@@ -182,6 +185,10 @@ try {
 
     if (-not $postInstall.CodexAvailable) {
         Write-Warning 'codex was not found in PATH. Install Codex CLI before using csx.'
+    }
+
+    if (-not $postInstall.ClaudeAvailable) {
+        Write-Warning 'claude was not found in PATH. Install Claude Code before using clx.'
     }
 
     if (-not $SkipShellIntegration) {
@@ -193,7 +200,7 @@ try {
             Write-Host "Launchers installed in $(Split-Path -Parent $postInstall.LauncherPath)"
             Write-Host "Reload your shell with: source $($postInstall.ProfilePath)"
         }
-        Write-Host 'Then run: csx doctor'
+        Write-Host 'Then run: csx doctor and clx doctor'
     } else {
         Write-Host 'Shell integration was skipped.'
     }

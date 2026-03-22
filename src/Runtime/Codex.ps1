@@ -1,25 +1,36 @@
-function Get-CshCodexCommand {
-    return (Get-Command codex -ErrorAction SilentlyContinue)
+function Get-CshProviderCommand {
+    param([string]$Provider = 'codex')
+
+    $binaryName = Get-CshProviderBinaryName -Provider $Provider
+    return (Get-Command $binaryName -ErrorAction SilentlyContinue)
 }
 
-function Assert-CshCodexAvailable {
-    if (Get-CshCodexCommand) {
+function Assert-CshProviderAvailable {
+    param([string]$Provider = 'codex')
+
+    if (Get-CshProviderCommand -Provider $Provider) {
         return
     }
 
-    throw 'codex was not found in PATH.'
+    $binaryName = Get-CshProviderBinaryName -Provider $Provider
+    throw "$binaryName was not found in PATH."
 }
 
 function Remove-CshSessions {
     param(
         [Parameter(Mandatory = $true)][object[]]$Sessions,
-        [Parameter(Mandatory = $true)][hashtable]$Index
+        [Parameter(Mandatory = $true)][hashtable]$Index,
+        [string]$Provider = 'codex'
     )
+
+    if (-not (Test-CshProviderSupportsDelete -Provider $Provider)) {
+        throw "{0} session delete is not supported." -f (Get-CshProviderDisplayName -Provider $Provider)
+    }
 
     $results = foreach ($session in $Sessions) {
         try {
             Remove-Item -Path $session.FilePath -Force -ErrorAction Stop
-            Remove-CshAlias -Index $Index -SessionId $session.SessionId
+            Remove-CshAlias -Index $Index -SessionId $session.SessionId -Provider $provider
             [pscustomobject]@{
                 SessionId = $session.SessionId
                 Success   = $true
@@ -34,7 +45,7 @@ function Remove-CshSessions {
         }
     }
 
-    Save-CshIndex -Index $Index
+    Save-CshIndex -Index $Index -Provider $provider
     return @($results)
 }
 
@@ -42,20 +53,19 @@ function Rename-CshSession {
     param(
         [Parameter(Mandatory = $true)][object]$Session,
         [Parameter(Mandatory = $true)][hashtable]$Index,
-        [string]$Alias
+        [string]$Alias,
+        [string]$Provider = 'codex'
     )
 
-    Set-CshAlias -Index $Index -SessionId $Session.SessionId -Alias $Alias
-    Save-CshIndex -Index $Index
+    Set-CshAlias -Index $Index -SessionId $Session.SessionId -Provider $Provider -Alias $Alias
+    Save-CshIndex -Index $Index -Provider $Provider
 }
 
-function Resume-CshSession {
+function Invoke-CshCodexResume {
     param(
         [Parameter(Mandatory = $true)][object]$Session,
         [switch]$ShellMode
     )
-
-    Assert-CshCodexAvailable
 
     if ($ShellMode -and $Session.ProjectExists) {
         Set-Location $Session.ProjectPath
@@ -68,6 +78,29 @@ function Resume-CshSession {
     }
 
     & codex resume --cd $Session.ProjectPath $Session.SessionId
+}
+
+function Resume-CshSession {
+    param(
+        [Parameter(Mandatory = $true)][object]$Session,
+        [switch]$ShellMode,
+        [string]$Provider = 'codex'
+    )
+
+    $providerName = Resolve-CshProviderName -Provider $Provider
+    Assert-CshProviderAvailable -Provider $providerName
+
+    switch ($providerName) {
+        'codex' {
+            Invoke-CshCodexResume -Session $Session -ShellMode:$ShellMode
+        }
+        'claude' {
+            Invoke-CshClaudeResume -Session $Session -ShellMode:$ShellMode
+        }
+        default {
+            throw "Unsupported provider: $providerName"
+        }
+    }
 }
 
 function Set-CshMarkedBlock {
@@ -118,7 +151,7 @@ function Remove-CshMarkedBlock {
 }
 
 function Get-CshPowerShellProfileBlock {
-    $modulePath = (Join-Path (Get-CshProjectRoot) 'src/CodexSessionHub.psd1').Replace("'", "''")
+    $modulePath = (Join-Path (Get-CshProjectRoot) 'src/AgentSessionHub.psd1').Replace("'", "''")
     $template = @'
 # >>> Codex Session Hub >>>
 $cshFzfPath = Join-Path $env:LOCALAPPDATA 'Programs\fzf\bin'
@@ -128,6 +161,10 @@ if ((Test-Path $cshFzfPath) -and (($env:Path -split ';') -notcontains $cshFzfPat
 function csx {{
     Import-Module '{0}' -Force
     Invoke-CsxCli -Arguments $args -ShellMode
+}}
+function clx {{
+    Import-Module '{0}' -Force
+    Invoke-ClxCli -Arguments $args -ShellMode
 }}
 Set-Alias cxs csx
 # <<< Codex Session Hub <<<
@@ -139,7 +176,7 @@ Set-Alias cxs csx
 function Get-CshPosixLauncherContent {
     param([Parameter(Mandatory = $true)][string]$Name)
 
-    $shimPath = (Join-Path (Get-CshProjectRoot) 'bin/csx.ps1').Replace('"', '\"')
+    $shimPath = (Join-Path (Get-CshProjectRoot) ('bin/{0}.ps1' -f $Name)).Replace('"', '\"')
     $template = @'
 #!/usr/bin/env sh
 exec pwsh -NoProfile -File "{0}" "$@"
@@ -148,25 +185,34 @@ exec pwsh -NoProfile -File "{0}" "$@"
     return ($template -f $shimPath)
 }
 
-function Get-CshPosixPathBlock {
-    $launcherRoot = (Get-CshLauncherRoot).Replace('"', '\"')
-    $launcherPath = (Join-Path (Get-CshLauncherRoot) 'csx').Replace('"', '\"')
+function Get-CshPosixFunctionBlock {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$BinaryName,
+        [string[]]$PassthroughCommands = @()
+    )
+
+    $launcherPath = (Join-Path (Get-CshLauncherRoot) $Name).Replace('"', '\"')
+    $caseLines = @()
+    foreach ($commandName in $PassthroughCommands) {
+        $caseLines += ('    {0})' -f $commandName)
+        $caseLines += '      shift'
+        $caseLines += '      ;;'
+    }
+    $caseBlock = $caseLines -join [Environment]::NewLine
+
     $template = @'
-# >>> Codex Session Hub >>>
-export PATH="{0}:$PATH"
-csx() {{
+{0}() {{
   case "${{1-}}" in
-    browse)
-      shift
-      ;;
+{1}
     doctor|rename|reset|delete|help|install-shell|uninstall-shell|__*)
-      "{1}" "$@"
+      "{2}" "$@"
       return $?
       ;;
   esac
 
   local _csh_result
-  _csh_result="$("{1}" __select "$@")" || return $?
+  _csh_result="$("{2}" __select "$@")" || return $?
   [ -z "$_csh_result" ] && return 0
 
   local _csh_project="${{_csh_result%%	*}}"
@@ -174,19 +220,34 @@ csx() {{
 
   if [ -n "$_csh_project" ] && [ -d "$_csh_project" ]; then
     cd "$_csh_project" || return $?
-    codex resume "$_csh_session"
-  else
-    codex resume --cd "$_csh_project" "$_csh_session"
   fi
-}}
 
-cxs() {{
-  csx "$@"
+  "{3}" --resume "$_csh_session"
 }}
+'@
+
+    return ($template -f $Name, $caseBlock, $launcherPath, $BinaryName)
+}
+
+function Get-CshPosixPathBlock {
+    $launcherRoot = (Get-CshLauncherRoot).Replace('"', '\"')
+    $functions = @(
+        Get-CshPosixFunctionBlock -Name 'csx' -BinaryName 'codex' -PassthroughCommands @('browse', 'delete')
+        Get-CshPosixFunctionBlock -Name 'clx' -BinaryName 'claude' -PassthroughCommands @('browse')
+        @'
+cxs() {
+  csx "$@"
+}
+'@
+    )
+    $template = @'
+# >>> Codex Session Hub >>>
+export PATH="{0}:$PATH"
+{1}
 # <<< Codex Session Hub <<<
 '@
 
-    return ($template -f $launcherRoot, $launcherPath)
+    return ($template -f $launcherRoot, ($functions -join [Environment]::NewLine + [Environment]::NewLine))
 }
 
 function Install-CshPowerShellShellIntegration {
@@ -201,9 +262,10 @@ function Install-CshPosixShellIntegration {
     $launcherRoot = Get-CshLauncherRoot
     Ensure-CshDirectory -Path $launcherRoot
 
-    foreach ($name in @('csx', 'cxs')) {
+    foreach ($name in @('csx', 'cxs', 'clx')) {
         $launcherPath = Join-Path $launcherRoot $name
-        Set-Content -Path $launcherPath -Value (Get-CshPosixLauncherContent -Name $name)
+        $contentName = if ($name -eq 'cxs') { 'csx' } else { $name }
+        Set-Content -Path $launcherPath -Value (Get-CshPosixLauncherContent -Name $contentName)
         try {
             & chmod +x $launcherPath
         } catch {
@@ -252,7 +314,7 @@ function Uninstall-CshShellIntegration {
     $profilePath = Get-CshShellProfilePath
     [void](Remove-CshMarkedBlock -Path $profilePath -MarkerStart $markerStart -MarkerEnd $markerEnd)
 
-    foreach ($name in @('csx', 'cxs')) {
+    foreach ($name in @('csx', 'cxs', 'clx')) {
         $launcherPath = Join-Path (Get-CshLauncherRoot) $name
         if (Test-Path $launcherPath) {
             Remove-Item -Path $launcherPath -Force
@@ -263,33 +325,42 @@ function Uninstall-CshShellIntegration {
 }
 
 function Invoke-CshDoctor {
-    $sessionRoot = Get-CshSessionRoot
+    param([string]$Provider = 'codex')
+
+    $providerName = Resolve-CshProviderName -Provider $Provider
+    $sessionRoot = Get-CshSessionRoot -Provider $providerName
     $configRoot = Get-CshConfigRoot
-    $fzfAvailable = Test-CshFzfAvailable
-    $codexAvailable = [bool](Get-CshCodexCommand)
+    $fzfAvailable = Test-CshFzfAvailable -Provider $providerName
+    $binaryName = Get-CshProviderBinaryName -Provider $providerName
+    $commandAvailable = [bool](Get-CshProviderCommand -Provider $providerName)
     $profileInstalled = $false
     $profilePath = Get-CshShellProfilePath
     $launcherPath = ''
+    $launcherName = Get-CshProviderLauncherName -Provider $providerName
 
     if ($IsWindows) {
         if (Test-Path $profilePath) {
-            $profileInstalled = (Get-Content -Path $profilePath -Raw) -match '# >>> Codex Session Hub >>>'
+            $rawProfile = Get-Content -Path $profilePath -Raw
+            $profileInstalled = $rawProfile -match "# >>> Codex Session Hub >>>" -and $rawProfile -match ("function {0}\s*\{{" -f [regex]::Escape($launcherName))
         }
     } else {
-        $launcherPath = Join-Path (Get-CshLauncherRoot) 'csx'
+        $launcherPath = Join-Path (Get-CshLauncherRoot) $launcherName
         $profileInstalled = (Test-Path $launcherPath) -and (Test-Path $profilePath) -and ((Get-Content -Path $profilePath -Raw) -match '# >>> Codex Session Hub >>>')
     }
 
     [pscustomobject]@{
+        Provider         = $providerName
+        ProviderName     = Get-CshProviderDisplayName -Provider $providerName
         PowerShellVersion = $PSVersionTable.PSVersion.ToString()
-        SessionRoot       = $sessionRoot
+        SessionRoot      = $sessionRoot
         SessionRootExists = Test-Path $sessionRoot
-        ConfigRoot        = $configRoot
-        FzfAvailable      = $fzfAvailable
-        CodexAvailable    = $codexAvailable
-        ProfilePath       = $profilePath
-        LauncherPath      = $launcherPath
-        ProfileInstalled  = $profileInstalled
-        InstallHelp       = if ($fzfAvailable) { 'fzf detected' } else { 'Install fzf, then rerun csx doctor. See README for platform commands.' }
+        ConfigRoot       = $configRoot
+        FzfAvailable     = $fzfAvailable
+        BinaryName       = $binaryName
+        CommandAvailable = $commandAvailable
+        ProfilePath      = $profilePath
+        LauncherPath     = $launcherPath
+        ProfileInstalled = $profileInstalled
+        InstallHelp      = if ($fzfAvailable) { 'fzf detected' } else { "Install fzf, then rerun $launcherName doctor. See README for platform commands." }
     }
 }
