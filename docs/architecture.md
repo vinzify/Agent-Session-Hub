@@ -1,10 +1,11 @@
 # Architecture
 
-Agent Session Hub is now a shared browser core with provider-specific session and runtime adapters.
+Agent Session Hub is a native Rust CLI that preserves the `csx` and `clx` command surface without any PowerShell runtime dependency.
 
-- `src/Common`: shared path, provider, and formatting helpers
-- `src/Metadata`: alias and config persistence, scoped per provider
-- `src/Sessions`: session discovery and parsing for both Codex and Claude stores
-- `src/Fzf`: browser rows, preview, filters, and `fzf` integration
-- `src/Runtime`: provider-specific resume behavior plus shared shell integration
-- `src/Commands`: CLI dispatch for `csx` and `clx`
+- `src/app.rs`: CLI dispatch, hidden helper commands, browser actions
+- `src/provider.rs`: provider metadata and launcher identity
+- `src/session.rs`: Codex and Claude session parsing, git context, query filtering
+- `src/config.rs`: alias persistence and legacy index migration
+- `src/browser.rs`: `fzf` integration, row format, preview rendering
+- `src/shell.rs`: shell profile integration for bash, zsh, fish, PowerShell, and Windows `cmd`
+- `install.sh` / `install.ps1`: local build or release-binary installation

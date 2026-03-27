@@ -1,38 +1,41 @@
 param(
-    [string]$InstallRoot
+    [string]$InstallRoot,
+    [string]$BinRoot
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-function Get-CshDefaultInstallRoot {
-    if ($IsWindows) {
-        return (Join-Path $env:LOCALAPPDATA 'AgentSessionHub')
+function Get-AshInstallRoot {
+    if ($InstallRoot) {
+        return $InstallRoot
     }
 
-    return (Join-Path $HOME '.local/share/agent-session-hub')
+    return (Join-Path $env:LOCALAPPDATA 'AgentSessionHub')
 }
 
-function Get-CshProfilePath {
-    return $PROFILE.CurrentUserCurrentHost
-}
-
-function Uninstall-CshShellIntegration {
-    param([Parameter(Mandatory = $true)][string]$ResolvedInstallRoot)
-
-    $modulePath = Join-Path $ResolvedInstallRoot 'src/AgentSessionHub.psd1'
-    if (-not (Test-Path $modulePath)) {
-        return $false
+function Get-AshBinRoot {
+    if ($BinRoot) {
+        return $BinRoot
     }
 
-    Import-Module $modulePath -Force
-    [void]@(Invoke-CsxCli -Arguments @('uninstall-shell'))
-    return $true
+    return (Join-Path (Get-AshInstallRoot) 'bin')
 }
 
-$resolvedInstallRoot = if ($InstallRoot) { $InstallRoot } else { Get-CshDefaultInstallRoot }
+$resolvedInstallRoot = Get-AshInstallRoot
+$resolvedBinRoot = Get-AshBinRoot
+$exePath = Join-Path $resolvedInstallRoot 'bin/agent-session-hub.exe'
 
-[void](Uninstall-CshShellIntegration -ResolvedInstallRoot $resolvedInstallRoot)
+if (Test-Path $exePath) {
+    & $exePath uninstall-shell *> $null
+}
+
+foreach ($name in @('agent-session-hub.exe', 'csx.cmd', 'clx.cmd', 'cxs.cmd')) {
+    $path = Join-Path $resolvedBinRoot $name
+    if (Test-Path $path) {
+        Remove-Item -LiteralPath $path -Force
+    }
+}
 
 if (Test-Path $resolvedInstallRoot) {
     Remove-Item -LiteralPath $resolvedInstallRoot -Recurse -Force
@@ -40,5 +43,3 @@ if (Test-Path $resolvedInstallRoot) {
 } else {
     Write-Host "Install root not found at $resolvedInstallRoot"
 }
-
-Write-Host 'Reload your shell with: . $PROFILE'

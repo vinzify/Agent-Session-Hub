@@ -1,20 +1,27 @@
 # Contributing
 
-## Setup
+## Local setup
 
-1. Install PowerShell 7.
-2. Install `fzf`.
-3. Clone the repository.
-4. Run `pwsh -File .\install.ps1`.
+1. Install Rust from https://rustup.rs/
+2. Install `fzf`
+3. Install `codex` and/or `claude`
+4. Run `cargo test`
 
-## Standards
+## Local install
 
-- Keep files focused and modular.
-- Add tests for session parsing, ordering, and metadata changes.
-- Avoid changing provider session files except for explicit supported delete operations.
+```sh
+./install.sh
+```
 
-## Tests
+Or on Windows:
 
 ```powershell
-Invoke-Pester -Path .\tests
+.\install.ps1
 ```
+
+## Notes
+
+- The public commands are `csx` and `clx`
+- The legacy alias `cxs` still maps to `csx`
+- The Rust runtime lives under `src/*.rs`
+- `cargo test` is the test entrypoint

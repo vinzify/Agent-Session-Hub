@@ -8,6 +8,7 @@ Thumbs.db
 
 # Test output
 TestResults/
+target/
 
 # Local config
 .vscode/

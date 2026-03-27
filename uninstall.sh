@@ -1,25 +1,14 @@
 #!/usr/bin/env sh
 set -eu
 
-REPOSITORY="${REPOSITORY:-vinzify/Agent-Session-Hub}"
-REF="${REF:-master}"
+INSTALL_ROOT="${INSTALL_ROOT:-${HOME}/.local/share/agent-session-hub}"
+BIN_ROOT="${BIN_ROOT:-${HOME}/.local/bin}"
 
-if ! command -v pwsh >/dev/null 2>&1; then
-  echo "Agent Session Hub requires PowerShell 7 (pwsh) in PATH." >&2
-  exit 1
+if [ -x "${BIN_ROOT}/csx" ]; then
+  "${BIN_ROOT}/csx" uninstall-shell >/dev/null 2>&1 || true
 fi
 
-SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${0}")" && pwd 2>/dev/null || true)"
-if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/uninstall.ps1" ]; then
-  exec pwsh -NoProfile -File "${SCRIPT_DIR}/uninstall.ps1" "$@"
-fi
+rm -f "${BIN_ROOT}/csx" "${BIN_ROOT}/clx" "${BIN_ROOT}/cxs"
+rm -rf "${INSTALL_ROOT}"
 
-TMP_DIR="$(mktemp -d 2>/dev/null || mktemp -d -t agent-session-hub-uninstall)"
-cleanup() {
-  rm -rf "${TMP_DIR}"
-}
-trap cleanup EXIT INT TERM
-
-SCRIPT_URL="https://raw.githubusercontent.com/${REPOSITORY}/${REF}/uninstall.ps1"
-curl -fsSL "${SCRIPT_URL}" -o "${TMP_DIR}/uninstall.ps1"
-exec pwsh -NoProfile -File "${TMP_DIR}/uninstall.ps1" "$@"
+printf 'Removed Agent Session Hub from %s\n' "$INSTALL_ROOT"
