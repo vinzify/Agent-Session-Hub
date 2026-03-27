@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.2.5
+
+- Fixed preview-pane row parsing so project and session previews render again in `fzf`
+- Added coverage for prefixed rows that include extra tab-delimited columns
+
+## 0.2.4
+
+- Internal release alignment for the preview-pane fix
+
+## 0.2.3
+
+- Kept the selector open after interactive rename, reset, and delete actions
+- Moved interactive delete prompts to stderr so shell wrappers do not swallow them
+
+## 0.2.2
+
+- Fixed shell selection handling so `Ctrl-D`, `Ctrl-E`, and `Ctrl-R` do not resume sessions
+- Added parser coverage for shortcut-based `fzf` output
+
+## 0.2.1
+
+- Replaced deprecated `fzf` flags with older-version-compatible bindings
+- Normalized selected rows in Rust instead of relying on `--accept-nth`
+
 ## 0.2.0
 
 - Replaced the PowerShell runtime with a native Rust CLI

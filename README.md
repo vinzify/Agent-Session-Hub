@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./banner.png" alt="Agent Session Hub banner">
+</p>
+
 # Agent Session Hub
 
 Agent Session Hub is a native Rust CLI that gives Codex CLI and Claude Code a shared, `fzf`-powered session browser.
