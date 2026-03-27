@@ -79,6 +79,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v5
+
       - name: Download release assets
         uses: actions/download-artifact@v4
         with:
@@ -96,4 +98,9 @@ jobs:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           draft: false
           prerelease: false
-          files: final-assets/*
+          files: |
+            final-assets/*
+            install.sh
+            install.ps1
+            uninstall.sh
+            uninstall.ps1

@@ -30,16 +30,16 @@ If you install from a local checkout, you also need a Rust toolchain.
 macOS / Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/vinzify/Agent-Session-Hub/master/install.sh | sh
+curl -fsSL https://github.com/vinzify/Agent-Session-Hub/releases/latest/download/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/vinzify/Agent-Session-Hub/master/install.ps1 | iex
+irm https://github.com/vinzify/Agent-Session-Hub/releases/latest/download/install.ps1 | iex
 ```
 
-Those install scripts download the latest GitHub Release archive for your platform. Local checkouts still build from source.
+Those install scripts are shipped as release assets and download the matching release archive for your platform. Local checkouts still build from source.
 
 From a local checkout:
 

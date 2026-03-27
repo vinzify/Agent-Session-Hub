@@ -35,6 +35,10 @@ To publish a release:
 1. Create and push a semver tag like `v0.1.0`
 2. Let `.github/workflows/release.yml` build and upload the release archives
 3. Verify the release contains:
+   - `install.sh`
+   - `install.ps1`
+   - `uninstall.sh`
+   - `uninstall.ps1`
    - `agent-session-hub-x86_64-unknown-linux-gnu.tar.gz`
    - `agent-session-hub-x86_64-apple-darwin.tar.gz`
    - `agent-session-hub-aarch64-apple-darwin.tar.gz`

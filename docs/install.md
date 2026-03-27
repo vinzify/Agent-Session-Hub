@@ -7,13 +7,13 @@ Agent Session Hub no longer requires PowerShell as the runtime. The application 
 macOS / Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/vinzify/Agent-Session-Hub/master/install.sh | sh
+curl -fsSL https://github.com/vinzify/Agent-Session-Hub/releases/latest/download/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/vinzify/Agent-Session-Hub/master/install.ps1 | iex
+irm https://github.com/vinzify/Agent-Session-Hub/releases/latest/download/install.ps1 | iex
 ```
 
 ## Local source install
