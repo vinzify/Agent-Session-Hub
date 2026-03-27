@@ -417,25 +417,25 @@ pub fn confirm_delete(sessions: &[SessionRecord]) -> Result<bool> {
         format!("{} sessions", sessions.len())
     };
 
-    println!(
+    eprintln!(
         "Delete {} session{}",
         sessions.len(),
         if sessions.len() == 1 { "" } else { "s" }
     );
-    println!("Workspace: {workspace_text}");
-    println!("Targets:");
+    eprintln!("Workspace: {workspace_text}");
+    eprintln!("Targets:");
     for session in sessions.iter().take(2) {
-        println!(
+        eprintln!(
             "  - #{} {}",
             session.session_id,
             compress_text(&session.display_title, 72)
         );
     }
     if sessions.len() > 2 {
-        println!("  - ... and {} more", sessions.len() - 2);
+        eprintln!("  - ... and {} more", sessions.len() - 2);
     }
-    print!("Confirm delete? [y/N] ");
-    io::stdout().flush()?;
+    eprint!("Confirm delete? [y/N] ");
+    io::stderr().flush()?;
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
     Ok(matches!(

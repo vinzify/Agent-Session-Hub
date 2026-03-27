@@ -74,80 +74,96 @@ fn load_index_and_sessions(
     Ok((index, sessions))
 }
 
+fn interactive_delete(
+    provider: ProviderKind,
+    selected: &[&crate::session::DisplaySession],
+) -> Result<()> {
+    if !provider.supports_delete() {
+        return Err(anyhow!(
+            "{} session delete is not supported.",
+            provider.display_name()
+        ));
+    }
+    let mut index = AliasIndex::load(provider)?;
+    let targets = selected
+        .iter()
+        .map(|entry| entry.session.clone())
+        .collect::<Vec<_>>();
+    if !confirm_delete(&targets)? {
+        return Ok(());
+    }
+    for session in targets {
+        match fs::remove_file(&session.file_path) {
+            Ok(_) => {
+                index.remove_alias(provider, &session.session_id);
+            }
+            Err(err) => {
+                eprintln!("[failed] {} {}", session.session_id, err);
+            }
+        }
+    }
+    index.save(provider)
+}
+
+fn interactive_rename(
+    provider: ProviderKind,
+    selected: &crate::session::DisplaySession,
+) -> Result<()> {
+    eprint!(
+        "Rename title for #{} in {} (blank resets): ",
+        selected.display_number, selected.session.project_name
+    );
+    io::stderr().flush()?;
+    let mut alias = String::new();
+    io::stdin().read_line(&mut alias)?;
+    let mut index = AliasIndex::load(provider)?;
+    index.set_alias(provider, &selected.session.session_id, alias.trim());
+    index.save(provider)
+}
+
+fn interactive_reset(
+    provider: ProviderKind,
+    selected: &crate::session::DisplaySession,
+) -> Result<()> {
+    let mut index = AliasIndex::load(provider)?;
+    index.remove_alias(provider, &selected.session.session_id);
+    index.save(provider)
+}
+
 fn browse_command(provider: ProviderKind, query: &str) -> Result<()> {
     ensure_fzf()?;
-    let (_index, sessions) = load_index_and_sessions(provider)?;
-    let display = display_sessions(&sessions);
-    let rows = fzf_rows(&filter_display_sessions(&sessions, query));
-    if rows.is_empty() {
-        return Ok(());
-    }
     let exe = current_exe()?;
-    let Some(result) = run_fzf(provider, query, &rows, &exe)? else {
-        return Ok(());
-    };
-    let selected = resolve_selected_sessions(&display, &result.session_ids);
-    if selected.is_empty() {
-        return Ok(());
-    }
+    let query = query.to_string();
 
-    match result.action.as_str() {
-        "enter" => {
-            if selected.len() > 1 {
-                return Err(anyhow!(
-                    "Resume only supports one session at a time. Clear multi-select or choose a single row."
-                ));
-            }
-            resume_session(&selected[0].session)
+    loop {
+        let (_index, sessions) = load_index_and_sessions(provider)?;
+        let display = display_sessions(&sessions);
+        let rows = fzf_rows(&filter_display_sessions(&sessions, &query));
+        if rows.is_empty() {
+            return Ok(());
         }
-        "ctrl-d" => {
-            if !provider.supports_delete() {
-                return Err(anyhow!(
-                    "{} session delete is not supported.",
-                    provider.display_name()
-                ));
-            }
-            let mut index = AliasIndex::load(provider)?;
-            let targets = selected
-                .into_iter()
-                .map(|entry| entry.session.clone())
-                .collect::<Vec<_>>();
-            if !confirm_delete(&targets)? {
-                return Ok(());
-            }
-            for session in targets {
-                match fs::remove_file(&session.file_path) {
-                    Ok(_) => {
-                        index.remove_alias(provider, &session.session_id);
-                        println!("[deleted] {} Deleted", session.session_id);
-                    }
-                    Err(err) => {
-                        println!("[failed] {} {}", session.session_id, err);
-                    }
+        let Some(result) = run_fzf(provider, &query, &rows, &exe)? else {
+            return Ok(());
+        };
+        let selected = resolve_selected_sessions(&display, &result.session_ids);
+        if selected.is_empty() {
+            continue;
+        }
+
+        match result.action.as_str() {
+            "enter" => {
+                if selected.len() > 1 {
+                    return Err(anyhow!(
+                        "Resume only supports one session at a time. Clear multi-select or choose a single row."
+                    ));
                 }
+                return resume_session(&selected[0].session);
             }
-            index.save(provider)
+            "ctrl-d" => interactive_delete(provider, &selected)?,
+            "ctrl-e" => interactive_rename(provider, selected[0])?,
+            "ctrl-r" => interactive_reset(provider, selected[0])?,
+            _ => return Err(anyhow!("Unsupported browser action: {}", result.action)),
         }
-        "ctrl-e" => {
-            let target = &selected[0].session;
-            print!(
-                "Rename title for #{} in {} (blank resets): ",
-                selected[0].display_number, target.project_name
-            );
-            io::stdout().flush()?;
-            let mut alias = String::new();
-            io::stdin().read_line(&mut alias)?;
-            let mut index = AliasIndex::load(provider)?;
-            index.set_alias(provider, &target.session_id, alias.trim());
-            index.save(provider)
-        }
-        "ctrl-r" => {
-            let target = &selected[0].session;
-            let mut index = AliasIndex::load(provider)?;
-            index.remove_alias(provider, &target.session_id);
-            index.save(provider)
-        }
-        _ => Err(anyhow!("Unsupported browser action: {}", result.action)),
     }
 }
 
@@ -257,83 +273,42 @@ fn hidden_query(provider: ProviderKind, args: &[String]) -> Result<()> {
 
 fn hidden_select(provider: ProviderKind, args: &[String]) -> Result<()> {
     ensure_fzf()?;
-    let query = args.join(" ");
-    let (_index, sessions) = load_index_and_sessions(provider)?;
-    let display = display_sessions(&sessions);
-    let rows = fzf_rows(&filter_display_sessions(&sessions, &query));
-    if rows.is_empty() {
-        return Ok(());
-    }
     let exe = current_exe()?;
-    let Some(result) = run_fzf(provider, &query, &rows, &exe)? else {
-        return Ok(());
-    };
-    let selected = resolve_selected_sessions(&display, &result.session_ids);
-    if selected.is_empty() {
-        return Ok(());
-    }
+    let query = args.join(" ");
 
-    match result.action.as_str() {
-        "enter" => {
-            if selected.len() > 1 {
-                return Err(anyhow!(
-                    "Resume only supports one session at a time. Clear multi-select or choose a single row."
-                ));
-            }
-            println!(
-                "{}	{}",
-                selected[0].session.project_path, selected[0].session.session_id
-            );
-            Ok(())
+    loop {
+        let (_index, sessions) = load_index_and_sessions(provider)?;
+        let display = display_sessions(&sessions);
+        let rows = fzf_rows(&filter_display_sessions(&sessions, &query));
+        if rows.is_empty() {
+            return Ok(());
         }
-        "ctrl-d" => {
-            if !provider.supports_delete() {
-                return Err(anyhow!(
-                    "{} session delete is not supported.",
-                    provider.display_name()
-                ));
-            }
-            let mut index = AliasIndex::load(provider)?;
-            let targets = selected
-                .into_iter()
-                .map(|entry| entry.session.clone())
-                .collect::<Vec<_>>();
-            if !confirm_delete(&targets)? {
+        let Some(result) = run_fzf(provider, &query, &rows, &exe)? else {
+            return Ok(());
+        };
+        let selected = resolve_selected_sessions(&display, &result.session_ids);
+        if selected.is_empty() {
+            continue;
+        }
+
+        match result.action.as_str() {
+            "enter" => {
+                if selected.len() > 1 {
+                    return Err(anyhow!(
+                        "Resume only supports one session at a time. Clear multi-select or choose a single row."
+                    ));
+                }
+                println!(
+                    "{}	{}",
+                    selected[0].session.project_path, selected[0].session.session_id
+                );
                 return Ok(());
             }
-            for session in targets {
-                match fs::remove_file(&session.file_path) {
-                    Ok(_) => {
-                        index.remove_alias(provider, &session.session_id);
-                        println!("[deleted] {} Deleted", session.session_id);
-                    }
-                    Err(err) => {
-                        println!("[failed] {} {}", session.session_id, err);
-                    }
-                }
-            }
-            index.save(provider)
+            "ctrl-d" => interactive_delete(provider, &selected)?,
+            "ctrl-e" => interactive_rename(provider, selected[0])?,
+            "ctrl-r" => interactive_reset(provider, selected[0])?,
+            _ => return Err(anyhow!("Unsupported browser action: {}", result.action)),
         }
-        "ctrl-e" => {
-            let target = &selected[0].session;
-            print!(
-                "Rename title for #{} in {} (blank resets): ",
-                selected[0].display_number, target.project_name
-            );
-            io::stdout().flush()?;
-            let mut alias = String::new();
-            io::stdin().read_line(&mut alias)?;
-            let mut index = AliasIndex::load(provider)?;
-            index.set_alias(provider, &target.session_id, alias.trim());
-            index.save(provider)
-        }
-        "ctrl-r" => {
-            let target = &selected[0].session;
-            let mut index = AliasIndex::load(provider)?;
-            index.remove_alias(provider, &target.session_id);
-            index.save(provider)
-        }
-        _ => Err(anyhow!("Unsupported browser action: {}", result.action)),
     }
 }
 
