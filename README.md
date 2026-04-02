@@ -4,33 +4,17 @@
 
 # Agent Session Hub
 
-Agent Session Hub is a native Rust CLI that gives Codex CLI, Claude Code, and OpenCode a shared, `fzf`-powered session browser.
+Jump back into any Codex CLI, Claude Code, or OpenCode session from one picker.
 
-## Features
+Agent Session Hub is a native Rust CLI that gives AI coding tools a shared, `fzf`-powered session switcher with previews, aliases, and resume-in-project behavior.
 
-- `csx` for Codex sessions
-- `clx` for Claude sessions
-- `opx` for OpenCode sessions
-- `sessionhub` for provider discovery and general help
-- One native binary surfaced as `sessionhub`, `csx`, `clx`, and `opx`
-- Shared browser model across all supported providers
-- Git-aware workspace grouping for repos, branches, and worktrees
-- Query filters for `title:`, `repo:`, and `branch:`
-- Alias rename and reset
-- Codex and OpenCode delete support
-- Preview panes and hidden `fzf` helper commands
-- Shell integration for bash, zsh, fish, PowerShell, and Windows `cmd`
-- Legacy `cxs` alias support
+## Why People Use It
 
-## Requirements
-
-- `fzf` in `PATH`
-- At least one supported provider CLI installed:
-  - `codex` for `csx`
-  - `claude` for `clx`
-  - `opencode` for `opx`
-
-If you install from a local checkout, you also need a Rust toolchain.
+- One session picker across `codex`, `claude`, and `opencode`
+- Resume from the right project directory instead of hunting through history
+- Preview sessions before reopening them
+- Rename, reset, and delete sessions without leaving the terminal
+- Keep fast daily commands: `csx`, `clx`, and `opx`
 
 ## Install
 
@@ -46,9 +30,84 @@ Windows PowerShell:
 irm https://github.com/vinzify/Agent-Session-Hub/releases/latest/download/install.ps1 | iex
 ```
 
-Those install scripts are shipped as release assets and download the matching release archive for your platform. Local checkouts still build from source.
+The public installer downloads the matching release binary for your platform and installs:
 
-From a local checkout:
+- `sessionhub`
+- `csx`
+- `clx`
+- `opx`
+- `cxs`
+
+## Use It In 10 Seconds
+
+```sh
+sessionhub
+sessionhub providers
+sessionhub help
+```
+
+`sessionhub` is the discovery entrypoint. Once it becomes muscle memory, use the direct launchers:
+
+```sh
+csx
+clx
+opx
+```
+
+Examples:
+
+```sh
+csx browse repo:Agent-Session-Hub
+clx browse branch:main
+opx browse title:landing
+csx rename <session-id> --name "Fix auth bug"
+opx delete <session-id>
+```
+
+## What Makes It Different
+
+| Capability | Provider-native history | Agent Session Hub |
+| --- | --- | --- |
+| One picker across multiple AI CLIs | No | Yes |
+| Fuzzy search with `fzf` | Varies | Yes |
+| Preview pane before resume | Rare | Yes |
+| Resume from the matching project directory | Varies | Yes |
+| Rename and reset session aliases | Rare | Yes |
+| Delete from the picker | Varies | Yes |
+
+## Supported Providers
+
+- Codex CLI via `csx`
+- Claude Code via `clx`
+- OpenCode via `opx`
+
+Requirements:
+
+- `fzf` in `PATH`
+- At least one of `codex`, `claude`, or `opencode`
+- Rust only when installing from a local checkout
+
+## Shell Behavior
+
+The installers automatically run:
+
+```sh
+csx install-shell
+```
+
+That shell integration keeps the direct launchers shell-native for resume flows:
+
+- select a session
+- change into the matching project directory when possible
+- reopen the session with `codex`, `claude`, or `opencode`
+
+To remove shell integration:
+
+```sh
+csx uninstall-shell
+```
+
+## Local Install
 
 ```sh
 git clone https://github.com/vinzify/Agent-Session-Hub.git
@@ -62,74 +121,19 @@ cd Agent-Session-Hub
 .\install.ps1
 ```
 
-The local install path builds the release binary with Cargo, installs `agent-session-hub`, `sessionhub`, `csx`, `clx`, `opx`, and `cxs`, and runs `csx install-shell` unless skipped.
+## Repo Layout
 
-## Usage
-
-```sh
-sessionhub
-sessionhub providers
-sessionhub help
-sessionhub opencode browse title:landing
-```
-
-`sessionhub` is the generic discovery entrypoint. For daily shell-native resume flows, keep using `csx`, `clx`, or `opx`.
-
-```sh
-csx
-csx browse repo:Agent-Session-Hub
-csx rename <session-id> --name "My alias"
-csx reset <session-id>
-csx delete <session-id>
-csx doctor
-```
-
-```sh
-clx
-clx browse branch:main
-clx rename <session-id> --name "Important chat"
-clx reset <session-id>
-clx doctor
-```
-
-```sh
-opx
-opx browse title:landing
-opx rename <session-id> --name "OpenCode task"
-opx reset <session-id>
-opx delete <session-id>
-opx doctor
-```
-
-## Shell Integration
-
-The install scripts add shell integration automatically by calling:
-
-```sh
-csx install-shell
-```
-
-That integration keeps `csx`, `clx`, and `opx` shell-native for resume flows:
-
-- select a session
-- change directory in the current shell when possible
-- run `codex resume`, `claude --resume`, or `opencode --session`
-
-The legacy alias `cxs` continues to forward to `csx`.
-
-To remove integration:
-
-```sh
-csx uninstall-shell
-```
-
-## Architecture
-
-The repo now contains only the Rust implementation:
-
-- `src/app.rs`: command dispatch and provider-mode selection
-- `src/session.rs`: Codex JSONL, Claude JSONL, and OpenCode SQLite session parsing, display shaping, and query filtering
-- `src/browser.rs`: `fzf` row generation, preview output, and browser actions
-- `src/config.rs`: alias index persistence and legacy index import
-- `src/shell.rs`: shell integration block generation
+- `src/app.rs`: CLI dispatch and provider-mode selection
+- `src/session.rs`: Codex JSONL, Claude JSONL, and OpenCode SQLite parsing plus filtering
+- `src/browser.rs`: `fzf` row generation, preview output, and picker actions
+- `src/config.rs`: alias persistence and legacy index import
+- `src/shell.rs`: shell integration for bash, zsh, fish, PowerShell, and Windows `cmd`
 - `src/provider.rs`: provider metadata and runtime behavior
+
+## Launching It
+
+For ready-to-post launch copy and demo checklist ideas, see [docs/launch.md](./docs/launch.md).
+
+## Contributing
+
+Start with [CONTRIBUTING.md](./CONTRIBUTING.md).
