@@ -8,7 +8,7 @@ Jump back into any Codex CLI, Claude Code, or OpenCode session from one picker.
 
 Agent Session Hub is a native Rust CLI that gives AI coding tools a shared, `fzf`-powered session switcher with previews, aliases, and resume-in-project behavior.
 
-## Why People Use It
+## What It Solves
 
 - One session picker across `codex`, `claude`, and `opencode`
 - Resume from the right project directory instead of hunting through history
@@ -36,7 +36,7 @@ The public installer downloads the matching release binary for your platform and
 - `csx`
 - `clx`
 - `opx`
-- `cxs`
+- `cxs` as a legacy alias that forwards to `csx`
 
 ## Use It In 10 Seconds
 
@@ -100,6 +100,8 @@ That shell integration keeps the direct launchers shell-native for resume flows:
 - select a session
 - change into the matching project directory when possible
 - reopen the session with `codex`, `claude`, or `opencode`
+
+If you used the old PowerShell-era releases, `cxs` is just the old shortcut for Codex and still forwards to `csx`.
 
 To remove shell integration:
 
