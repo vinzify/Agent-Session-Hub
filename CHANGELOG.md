@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0
+
+- Added OpenCode provider support with the new `opx` launcher
+- Loaded OpenCode sessions from the local SQLite store and restored preview support in the shared browser
+- Added OpenCode resume and delete handling plus installer and shell integration updates
+
 ## 0.2.5
 
 - Fixed preview-pane row parsing so project and session previews render again in `fzf`

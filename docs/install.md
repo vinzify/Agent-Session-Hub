@@ -23,6 +23,7 @@ The local source path builds the binary with Cargo and installs:
 - `agent-session-hub`
 - `csx`
 - `clx`
+- `opx`
 
 Example:
 
@@ -37,5 +38,5 @@ Example:
 ## Requirements
 
 - `fzf`
-- `codex` and/or `claude`
+- `codex`, `claude`, and/or `opencode`
 - Rust only when installing from a local checkout

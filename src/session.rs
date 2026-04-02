@@ -5,6 +5,7 @@ use crate::paths::provider_session_root;
 use crate::provider::ProviderKind;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local, TimeZone, Utc};
+use rusqlite::Connection;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -145,6 +146,12 @@ fn local_from_system_time(metadata: &fs::Metadata) -> DateTime<Local> {
         .unwrap_or_else(Local::now)
 }
 
+fn local_from_millis(millis: i64) -> Option<DateTime<Local>> {
+    Utc.timestamp_millis_opt(millis)
+        .single()
+        .map(|timestamp| timestamp.with_timezone(&Local))
+}
+
 fn new_session_record(
     provider: ProviderKind,
     session_id: String,
@@ -156,6 +163,7 @@ fn new_session_record(
     file_path: PathBuf,
     recorded_branch_name: String,
     recorded_detached_head: bool,
+    title_hint: String,
     slug: String,
     git_context_cache: &mut HashMap<String, GitContext>,
 ) -> SessionRecord {
@@ -171,6 +179,8 @@ fn new_session_record(
     let preview_text = compress_text(&preview, 160);
     let display_title = if !alias.trim().is_empty() {
         alias.clone()
+    } else if !title_hint.trim().is_empty() {
+        title_hint.clone()
     } else if !preview_text.is_empty() {
         preview_text.clone()
     } else if !slug.trim().is_empty() {
@@ -281,6 +291,7 @@ fn read_codex_session_file(
         file_path.to_path_buf(),
         String::new(),
         false,
+        String::new(),
         String::new(),
         git_cache,
     )))
@@ -443,12 +454,137 @@ fn read_claude_session_file(
         file_path.to_path_buf(),
         recorded_branch_name,
         recorded_detached_head,
+        String::new(),
         slug,
         git_cache,
     )))
 }
 
+fn opencode_preview_index(conn: &Connection) -> Result<HashMap<String, String>> {
+    let mut statement = conn.prepare(
+        "select m.session_id, m.data, p.data from message m join part p on p.message_id = m.id order by m.time_created asc, p.time_created asc",
+    )?;
+    let mut rows = statement.query([])?;
+    let mut previews = HashMap::new();
+    let mut fallbacks = HashMap::new();
+
+    while let Some(row) = rows.next()? {
+        let session_id: String = row.get(0)?;
+        let message_data: String = row.get(1)?;
+        let part_data: String = row.get(2)?;
+
+        let Ok(message) = serde_json::from_str::<Value>(&message_data) else {
+            continue;
+        };
+        if strv(&message, "role") != "user" {
+            continue;
+        }
+
+        let Ok(part) = serde_json::from_str::<Value>(&part_data) else {
+            continue;
+        };
+        if strv(&part, "type") != "text" {
+            continue;
+        }
+
+        let candidate = strv(&part, "text");
+        if candidate.trim().is_empty() {
+            continue;
+        }
+
+        fallbacks
+            .entry(session_id.clone())
+            .or_insert_with(|| candidate.clone());
+        if meaningful_user_text(&candidate) {
+            previews.entry(session_id).or_insert(candidate);
+        }
+    }
+
+    for (session_id, candidate) in fallbacks {
+        previews.entry(session_id).or_insert(candidate);
+    }
+
+    Ok(previews)
+}
+
+fn load_opencode_sessions_from_db(
+    db_path: &Path,
+    index: &AliasIndex,
+) -> Result<Vec<SessionRecord>> {
+    let conn = Connection::open(db_path).with_context(|| format!("open {}", db_path.display()))?;
+    let previews = opencode_preview_index(&conn)?;
+    let mut statement = conn.prepare(
+        "select s.id, s.slug, s.directory, s.title, s.time_created, s.time_updated, w.branch from session s left join workspace w on w.id = s.workspace_id where s.time_archived is null order by s.time_updated desc",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, Option<String>>(6)?,
+        ))
+    })?;
+
+    let mut git_cache = HashMap::new();
+    let mut sessions = Vec::new();
+    for row in rows {
+        let (session_id, slug, directory, title, created_at, updated_at, branch) = row?;
+        let recorded_detached_head = branch.as_deref() == Some("HEAD");
+        let recorded_branch_name = if recorded_detached_head {
+            String::new()
+        } else {
+            branch.unwrap_or_default()
+        };
+        let timestamp = local_from_millis(created_at).unwrap_or_else(Local::now);
+        let last_updated = local_from_millis(updated_at).unwrap_or(timestamp);
+        let preview = previews
+            .get(&session_id)
+            .cloned()
+            .unwrap_or_else(|| title.clone());
+
+        sessions.push(new_session_record(
+            ProviderKind::Opencode,
+            session_id.clone(),
+            timestamp,
+            last_updated,
+            directory,
+            preview,
+            index.get_alias(ProviderKind::Opencode, &session_id),
+            db_path.to_path_buf(),
+            recorded_branch_name,
+            recorded_detached_head,
+            title,
+            slug,
+            &mut git_cache,
+        ));
+    }
+
+    sessions.sort_by(|left, right| {
+        right
+            .timestamp
+            .cmp(&left.timestamp)
+            .then_with(|| left.project_path.cmp(&right.project_path))
+    });
+    Ok(sessions)
+}
+
+fn load_opencode_sessions(index: &AliasIndex) -> Result<Vec<SessionRecord>> {
+    let session_root = provider_session_root(ProviderKind::Opencode);
+    let db_path = session_root.join("opencode.db");
+    if !db_path.exists() {
+        return Ok(Vec::new());
+    }
+    load_opencode_sessions_from_db(&db_path, index)
+}
+
 pub fn load_sessions(provider: ProviderKind, index: &AliasIndex) -> Result<Vec<SessionRecord>> {
+    if provider == ProviderKind::Opencode {
+        return load_opencode_sessions(index);
+    }
+
     let session_root = provider_session_root(provider);
     if !session_root.exists() {
         return Ok(Vec::new());
@@ -481,6 +617,7 @@ pub fn load_sessions(provider: ProviderKind, index: &AliasIndex) -> Result<Vec<S
             ProviderKind::Claude => {
                 read_claude_session_file(&file, index, &mut git_cache, &history)?
             }
+            ProviderKind::Opencode => None,
         };
         if let Some(session) = session {
             sessions.push(session);
@@ -651,6 +788,8 @@ pub fn find_session<'a>(
 mod tests {
     use super::*;
     use chrono::Local;
+    use rusqlite::Connection;
+    use tempfile::tempdir;
 
     fn sample_session(name: &str, number: usize) -> SessionRecord {
         let now = Local::now();
@@ -689,5 +828,91 @@ mod tests {
         let filtered = filter_display_sessions(&sessions, "title:title 2");
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].session.project_name, "beta");
+    }
+
+    #[test]
+    fn loads_opencode_sessions_from_sqlite() {
+        let temp = tempdir().unwrap();
+        let project_dir = temp.path().join("project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let db_path = temp.path().join("opencode.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "
+            create table session (
+                id text primary key,
+                slug text not null,
+                directory text not null,
+                title text not null,
+                time_created integer not null,
+                time_updated integer not null,
+                time_archived integer,
+                workspace_id text
+            );
+            create table workspace (
+                id text primary key,
+                branch text
+            );
+            create table message (
+                id text primary key,
+                session_id text not null,
+                time_created integer not null,
+                data text not null
+            );
+            create table part (
+                id text primary key,
+                message_id text not null,
+                time_created integer not null,
+                data text not null
+            );
+            ",
+        )
+        .unwrap();
+        conn.execute(
+            "insert into workspace (id, branch) values (?1, ?2)",
+            ("wrk_1", "main"),
+        )
+        .unwrap();
+        conn.execute(
+            "insert into session (id, slug, directory, title, time_created, time_updated, time_archived, workspace_id) values (?1, ?2, ?3, ?4, ?5, ?6, null, ?7)",
+            (
+                "ses_123",
+                "quiet-river",
+                project_dir.to_string_lossy().to_string(),
+                "Helpful title",
+                1_775_153_867_876_i64,
+                1_775_155_435_118_i64,
+                "wrk_1",
+            ),
+        )
+        .unwrap();
+        conn.execute(
+            "insert into message (id, session_id, time_created, data) values (?1, ?2, ?3, ?4)",
+            ("msg_1", "ses_123", 1_i64, r#"{"role":"user"}"#),
+        )
+        .unwrap();
+        conn.execute(
+            "insert into part (id, message_id, time_created, data) values (?1, ?2, ?3, ?4)",
+            (
+                "part_1",
+                "msg_1",
+                1_i64,
+                r#"{"type":"text","text":"Build a striking landing page for this product"}"#,
+            ),
+        )
+        .unwrap();
+
+        let sessions = load_opencode_sessions_from_db(&db_path, &AliasIndex::default()).unwrap();
+        assert_eq!(sessions.len(), 1);
+        let session = &sessions[0];
+        assert_eq!(session.provider, ProviderKind::Opencode);
+        assert_eq!(session.session_id, "ses_123");
+        assert_eq!(session.display_title, "Helpful title");
+        assert_eq!(
+            session.preview,
+            "Build a striking landing page for this product"
+        );
+        assert!(session.supports_delete);
+        assert_eq!(session.branch_display, "main");
     }
 }

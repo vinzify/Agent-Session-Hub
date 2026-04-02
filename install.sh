@@ -91,8 +91,9 @@ install_binary() {
   chmod +x "${INSTALL_ROOT}/bin/agent-session-hub"
   cp "${INSTALL_ROOT}/bin/agent-session-hub" "${BIN_ROOT}/csx"
   cp "${INSTALL_ROOT}/bin/agent-session-hub" "${BIN_ROOT}/clx"
+  cp "${INSTALL_ROOT}/bin/agent-session-hub" "${BIN_ROOT}/opx"
   cp "${INSTALL_ROOT}/bin/agent-session-hub" "${BIN_ROOT}/cxs"
-  chmod +x "${BIN_ROOT}/csx" "${BIN_ROOT}/clx" "${BIN_ROOT}/cxs"
+  chmod +x "${BIN_ROOT}/csx" "${BIN_ROOT}/clx" "${BIN_ROOT}/opx" "${BIN_ROOT}/cxs"
 }
 
 run_shell_install() {
@@ -133,7 +134,7 @@ main() {
   if [ "$SKIP_SHELL_INTEGRATION" = "1" ]; then
     printf 'Shell integration was skipped.\n'
   else
-    printf 'Run: csx doctor and clx doctor\n'
+    printf 'Run: csx doctor, clx doctor, and opx doctor\n'
   fi
 }
 

@@ -8,7 +8,7 @@ if [ -x "${BIN_ROOT}/csx" ]; then
   "${BIN_ROOT}/csx" uninstall-shell >/dev/null 2>&1 || true
 fi
 
-rm -f "${BIN_ROOT}/csx" "${BIN_ROOT}/clx" "${BIN_ROOT}/cxs"
+rm -f "${BIN_ROOT}/csx" "${BIN_ROOT}/clx" "${BIN_ROOT}/opx" "${BIN_ROOT}/cxs"
 rm -rf "${INSTALL_ROOT}"
 
 printf 'Removed Agent Session Hub from %s\n' "$INSTALL_ROOT"

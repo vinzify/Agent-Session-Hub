@@ -4,6 +4,7 @@ use std::path::PathBuf;
 pub enum ProviderKind {
     Codex,
     Claude,
+    Opencode,
 }
 
 impl ProviderKind {
@@ -11,6 +12,7 @@ impl ProviderKind {
         match value.trim().to_ascii_lowercase().as_str() {
             "" | "codex" => Some(Self::Codex),
             "claude" => Some(Self::Claude),
+            "opencode" => Some(Self::Opencode),
             _ => None,
         }
     }
@@ -19,6 +21,7 @@ impl ProviderKind {
         match self {
             Self::Codex => "codex",
             Self::Claude => "claude",
+            Self::Opencode => "opencode",
         }
     }
 
@@ -26,6 +29,7 @@ impl ProviderKind {
         match self {
             Self::Codex => "Codex",
             Self::Claude => "Claude",
+            Self::Opencode => "OpenCode",
         }
     }
 
@@ -33,6 +37,7 @@ impl ProviderKind {
         match self {
             Self::Codex => "csx",
             Self::Claude => "clx",
+            Self::Opencode => "opx",
         }
     }
 
@@ -41,13 +46,14 @@ impl ProviderKind {
     }
 
     pub fn supports_delete(self) -> bool {
-        matches!(self, Self::Codex)
+        matches!(self, Self::Codex | Self::Opencode)
     }
 
     pub fn session_root_env(self) -> &'static str {
         match self {
             Self::Codex => "CODEX_SESSION_HUB_SESSION_ROOT",
             Self::Claude => "CODEX_SESSION_HUB_CLAUDE_SESSION_ROOT",
+            Self::Opencode => "CODEX_SESSION_HUB_OPENCODE_SESSION_ROOT",
         }
     }
 
@@ -55,6 +61,7 @@ impl ProviderKind {
         match self {
             Self::Codex => "index.json",
             Self::Claude => "claude-index.json",
+            Self::Opencode => "opencode-index.json",
         }
     }
 
@@ -63,6 +70,9 @@ impl ProviderKind {
         match self {
             Self::Codex => home.join(".codex").join("sessions"),
             Self::Claude => home.join(".claude").join("projects"),
+            Self::Opencode => dirs::data_local_dir()
+                .unwrap_or_else(|| home.join(".local").join("share"))
+                .join("opencode"),
         }
     }
 
@@ -72,6 +82,7 @@ impl ProviderKind {
         let lower = file_name.trim_end_matches(".exe").to_ascii_lowercase();
         match lower.as_str() {
             "clx" => Self::Claude,
+            "opx" => Self::Opencode,
             _ => Self::Codex,
         }
     }

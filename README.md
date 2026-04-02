@@ -4,18 +4,19 @@
 
 # Agent Session Hub
 
-Agent Session Hub is a native Rust CLI that gives Codex CLI and Claude Code a shared, `fzf`-powered session browser.
+Agent Session Hub is a native Rust CLI that gives Codex CLI, Claude Code, and OpenCode a shared, `fzf`-powered session browser.
 
 ## Features
 
 - `csx` for Codex sessions
 - `clx` for Claude sessions
-- One native binary surfaced as `csx` and `clx`
-- Shared browser model across both providers
+- `opx` for OpenCode sessions
+- One native binary surfaced as `csx`, `clx`, and `opx`
+- Shared browser model across all supported providers
 - Git-aware workspace grouping for repos, branches, and worktrees
 - Query filters for `title:`, `repo:`, and `branch:`
 - Alias rename and reset
-- Codex bulk delete support
+- Codex and OpenCode delete support
 - Preview panes and hidden `fzf` helper commands
 - Shell integration for bash, zsh, fish, PowerShell, and Windows `cmd`
 - Legacy `cxs` alias support
@@ -26,6 +27,7 @@ Agent Session Hub is a native Rust CLI that gives Codex CLI and Claude Code a sh
 - At least one supported provider CLI installed:
   - `codex` for `csx`
   - `claude` for `clx`
+  - `opencode` for `opx`
 
 If you install from a local checkout, you also need a Rust toolchain.
 
@@ -59,7 +61,7 @@ cd Agent-Session-Hub
 .\install.ps1
 ```
 
-The local install path builds the release binary with Cargo, installs `agent-session-hub`, `csx`, `clx`, and `cxs`, and runs `csx install-shell` unless skipped.
+The local install path builds the release binary with Cargo, installs `agent-session-hub`, `csx`, `clx`, `opx`, and `cxs`, and runs `csx install-shell` unless skipped.
 
 ## Usage
 
@@ -80,6 +82,15 @@ clx reset <session-id>
 clx doctor
 ```
 
+```sh
+opx
+opx browse title:landing
+opx rename <session-id> --name "OpenCode task"
+opx reset <session-id>
+opx delete <session-id>
+opx doctor
+```
+
 ## Shell Integration
 
 The install scripts add shell integration automatically by calling:
@@ -88,11 +99,11 @@ The install scripts add shell integration automatically by calling:
 csx install-shell
 ```
 
-That integration keeps `csx` and `clx` shell-native for resume flows:
+That integration keeps `csx`, `clx`, and `opx` shell-native for resume flows:
 
 - select a session
 - change directory in the current shell when possible
-- run `codex --resume` or `claude --resume`
+- run `codex resume`, `claude --resume`, or `opencode --session`
 
 The legacy alias `cxs` continues to forward to `csx`.
 
@@ -107,7 +118,7 @@ csx uninstall-shell
 The repo now contains only the Rust implementation:
 
 - `src/app.rs`: command dispatch and provider-mode selection
-- `src/session.rs`: session parsing, display shaping, and query filtering
+- `src/session.rs`: Codex JSONL, Claude JSONL, and OpenCode SQLite session parsing, display shaping, and query filtering
 - `src/browser.rs`: `fzf` row generation, preview output, and browser actions
 - `src/config.rs`: alias index persistence and legacy index import
 - `src/shell.rs`: shell integration block generation

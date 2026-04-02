@@ -71,7 +71,7 @@ fn remove_marked_block(path: &Path) -> Result<bool> {
     Ok(true)
 }
 
-fn posix_function(name: &str, binary_name: &str, passthrough: &[&str]) -> String {
+fn posix_function(name: &str, passthrough: &[&str]) -> String {
     let passthrough_cases = passthrough
         .iter()
         .map(|value| format!("    {value})\n      shift\n      ;;"))
@@ -98,12 +98,12 @@ fn posix_function(name: &str, binary_name: &str, passthrough: &[&str]) -> String
     cd "$_ash_project" || return $?
   fi
 
-  {binary_name} --resume "$_ash_session"
+  command {name} --resume "$_ash_session"
 }}"#
     )
 }
 
-fn fish_function(name: &str, binary_name: &str) -> String {
+fn fish_function(name: &str) -> String {
     format!(
         r#"function {name}
     set first $argv[1]
@@ -125,12 +125,12 @@ fn fish_function(name: &str, binary_name: &str) -> String {
         cd "$ash_parts[1]"
     end
 
-    {binary_name} --resume "$ash_parts[2]"
+    command {name} --resume "$ash_parts[2]"
 end"#
     )
 }
 
-fn powershell_function(name: &str, provider: &str, binary_name: &str, exe: &str) -> String {
+fn powershell_function(name: &str, provider: &str, exe: &str) -> String {
     format!(
         r#"function {name} {{
     $commandName = if ($args.Count -gt 0) {{ [string]$args[0] }} else {{ '' }}
@@ -151,13 +151,13 @@ fn powershell_function(name: &str, provider: &str, binary_name: &str, exe: &str)
         Set-Location $parts[0]
     }}
     if ($parts.Length -ge 2 -and -not [string]::IsNullOrWhiteSpace($parts[1])) {{
-        & {binary_name} --resume $parts[1]
+        & '{exe}' --provider {provider} --resume $parts[1]
     }}
 }}"#
     )
 }
 
-pub fn cmd_launcher_content(exe_name: &str, provider: &str, binary_name: &str) -> String {
+pub fn cmd_launcher_content(exe_name: &str, provider: &str) -> String {
     format!(
         "@echo off\r\n\
 setlocal\r\n\
@@ -186,7 +186,7 @@ for /f \"usebackq tokens=1,* delims=\t\" %%A in (`\"%ASH_EXE%\" --provider {prov
 \r\n\
 if not defined ASH_SESSION exit /b 0\r\n\
 if defined ASH_PROJECT if exist \"%ASH_PROJECT%\" cd /d \"%ASH_PROJECT%\"\r\n\
-{binary_name} --resume \"%ASH_SESSION%\"\r\n\
+\"%ASH_EXE%\" --provider {provider} --resume \"%ASH_SESSION%\"\r\n\
 exit /b %ERRORLEVEL%\r\n\
 \r\n\
 :passthrough\r\n\
@@ -207,11 +207,9 @@ pub fn install_cmd_launchers(exe_path: &Path) -> Result<PathBuf> {
         .and_then(|value| value.to_str())
         .unwrap_or("agent-session-hub.exe");
     let launchers = [
-        ("csx.cmd", cmd_launcher_content(exe_name, "codex", "codex")),
-        (
-            "clx.cmd",
-            cmd_launcher_content(exe_name, "claude", "claude"),
-        ),
+        ("csx.cmd", cmd_launcher_content(exe_name, "codex")),
+        ("clx.cmd", cmd_launcher_content(exe_name, "claude")),
+        ("opx.cmd", cmd_launcher_content(exe_name, "opencode")),
         ("cxs.cmd", "@echo off\r\ncsx %*\r\n".to_string()),
     ];
     for (name, content) in launchers {
@@ -229,17 +227,19 @@ pub fn install_posix_shell_integration(shell_name: Option<&str>) -> Result<Shell
 
     let block = if profile_path.ends_with("config.fish") || shell_name == Some("fish") {
         format!(
-            "{MARKER_START}\nset -gx PATH \"{}\" $PATH\n{}\n{}\nfunction cxs\n    csx $argv\nend\n{MARKER_END}",
+            "{MARKER_START}\nset -gx PATH \"{}\" $PATH\n{}\n{}\n{}\nfunction cxs\n    csx $argv\nend\n{MARKER_END}",
             launcher_root.display(),
-            fish_function("csx", "codex"),
-            fish_function("clx", "claude"),
+            fish_function("csx"),
+            fish_function("clx"),
+            fish_function("opx"),
         )
     } else {
         format!(
-            "{MARKER_START}\nexport PATH='{}':$PATH\n{}\n{}\ncxs() {{ csx \"$@\"; }}\n{MARKER_END}",
+            "{MARKER_START}\nexport PATH='{}':$PATH\n{}\n{}\n{}\ncxs() {{ csx \"$@\"; }}\n{MARKER_END}",
             escape_sh_single_quotes(&launcher_root.to_string_lossy()),
-            posix_function("csx", "codex", &["browse"]),
-            posix_function("clx", "claude", &["browse"]),
+            posix_function("csx", &["browse"]),
+            posix_function("clx", &["browse"]),
+            posix_function("opx", &["browse"]),
         )
     };
     replace_marked_block(&profile_path, &block)?;
@@ -261,10 +261,12 @@ pub fn powershell_profile_block(exe_path: &Path) -> String {
         r#"{MARKER_START}
 {}
 {}
+{}
 Set-Alias cxs csx
 {MARKER_END}"#,
-        powershell_function("csx", "codex", "codex", &exe),
-        powershell_function("clx", "claude", "claude", &exe),
+        powershell_function("csx", "codex", &exe),
+        powershell_function("clx", "claude", &exe),
+        powershell_function("opx", "opencode", &exe),
     )
 }
 
@@ -288,15 +290,16 @@ mod tests {
     fn powershell_block_passes_through_management_commands() {
         let block = powershell_profile_block(Path::new("/tmp/agent-session-hub"));
         assert!(block.contains("--provider codex @args"));
-        assert!(block.contains("__select @args"));
+        assert!(block.contains("--provider opencode __select @args"));
+        assert!(block.contains("--provider opencode --resume"));
         assert!(block.contains("$commandName -eq 'browse'"));
     }
 
     #[test]
     fn cmd_block_selects_then_resumes() {
-        let block = cmd_launcher_content("agent-session-hub.exe", "claude", "claude");
+        let block = cmd_launcher_content("agent-session-hub.exe", "claude");
         assert!(block.contains("--provider claude __select"));
-        assert!(block.contains("claude --resume"));
+        assert!(block.contains("--provider claude --resume"));
         assert!(block.contains("goto passthrough"));
     }
 }

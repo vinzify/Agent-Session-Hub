@@ -74,6 +74,35 @@ fn load_index_and_sessions(
     Ok((index, sessions))
 }
 
+fn delete_session(
+    provider: ProviderKind,
+    session: &crate::session::SessionRecord,
+    index: &mut AliasIndex,
+) -> Result<()> {
+    match provider {
+        ProviderKind::Codex => {
+            fs::remove_file(&session.file_path)
+                .with_context(|| format!("remove {}", session.file_path.display()))?;
+        }
+        ProviderKind::Claude => {
+            return Err(anyhow!("Claude session delete is not supported."));
+        }
+        ProviderKind::Opencode => {
+            let status = Command::new("opencode")
+                .arg("session")
+                .arg("delete")
+                .arg(&session.session_id)
+                .status()
+                .context("run opencode session delete")?;
+            if !status.success() {
+                return Err(anyhow!("opencode session delete failed"));
+            }
+        }
+    }
+    index.remove_alias(provider, &session.session_id);
+    Ok(())
+}
+
 fn interactive_delete(
     provider: ProviderKind,
     selected: &[&crate::session::DisplaySession],
@@ -93,13 +122,8 @@ fn interactive_delete(
         return Ok(());
     }
     for session in targets {
-        match fs::remove_file(&session.file_path) {
-            Ok(_) => {
-                index.remove_alias(provider, &session.session_id);
-            }
-            Err(err) => {
-                eprintln!("[failed] {} {}", session.session_id, err);
-            }
+        if let Err(err) = delete_session(provider, &session, &mut index) {
+            eprintln!("[failed] {} {}", session.session_id, err);
         }
     }
     index.save(provider)
@@ -228,14 +252,9 @@ fn delete_command(provider: ProviderKind, args: &[String]) -> Result<()> {
         .collect::<Result<Vec<_>>>()?;
     let mut index = AliasIndex::load(provider)?;
     for session in targets {
-        match fs::remove_file(&session.file_path) {
-            Ok(_) => {
-                index.remove_alias(provider, &session.session_id);
-                println!("[deleted] {} Deleted", session.session_id);
-            }
-            Err(err) => {
-                println!("[failed] {} {}", session.session_id, err);
-            }
+        match delete_session(provider, &session, &mut index) {
+            Ok(_) => println!("[deleted] {} Deleted", session.session_id),
+            Err(err) => println!("[failed] {} {}", session.session_id, err),
         }
     }
     index.save(provider)
@@ -355,6 +374,17 @@ fn resume_provider(
                 return Err(anyhow!("claude resume failed"));
             }
         }
+        ProviderKind::Opencode => {
+            let mut command = Command::new("opencode");
+            command.arg("--session").arg(session_id);
+            if let Some(project_path) = project_path.filter(|value| !value.trim().is_empty()) {
+                command.current_dir(project_path);
+            }
+            let status = command.status().context("run opencode")?;
+            if !status.success() {
+                return Err(anyhow!("opencode resume failed"));
+            }
+        }
     }
     Ok(())
 }
@@ -394,7 +424,7 @@ fn uninstall_shell_command(_provider: ProviderKind) -> Result<()> {
     if cfg!(windows) {
         let profile_path = uninstall_powershell_shell_integration()?;
         let launcher_root = crate::paths::launcher_root();
-        for name in ["csx.cmd", "clx.cmd", "cxs.cmd"] {
+        for name in ["csx.cmd", "clx.cmd", "opx.cmd", "cxs.cmd"] {
             let path = launcher_root.join(name);
             if path.exists() {
                 let _ = fs::remove_file(path);
@@ -470,5 +500,9 @@ mod tests {
     fn argv0_provider_aliases_work() {
         assert_eq!(ProviderKind::alias_from_argv0("csx"), ProviderKind::Codex);
         assert_eq!(ProviderKind::alias_from_argv0("clx"), ProviderKind::Claude);
+        assert_eq!(
+            ProviderKind::alias_from_argv0("opx"),
+            ProviderKind::Opencode
+        );
     }
 }

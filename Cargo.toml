@@ -1,6 +1,6 @@
 [package]
 name = "agent-session-hub"
-version = "0.2.5"
+version = "0.3.0"
 edition = "2024"
 description = "fzf-powered session browser for Codex CLI and Claude Code"
 license = "MIT"
@@ -15,6 +15,7 @@ chrono = { version = "0.4", features = ["clock", "serde"] }
 dirs = "6.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+rusqlite = { version = "0.37", features = ["bundled"] }
 walkdir = "2.5"
 which = "8.0"
 
