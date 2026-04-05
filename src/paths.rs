@@ -175,15 +175,30 @@ pub fn normalize_path(path: &str) -> String {
 mod tests {
     use super::detect_posix_profile;
     use std::path::PathBuf;
+    use std::sync::{LazyLock, Mutex};
+
+    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    fn with_shell<T>(shell: &str, f: impl FnOnce() -> T) -> T {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let previous = std::env::var_os("SHELL");
+        unsafe {
+            std::env::set_var("SHELL", shell);
+        }
+
+        let result = f();
+
+        match previous {
+            Some(value) => unsafe { std::env::set_var("SHELL", value) },
+            None => unsafe { std::env::remove_var("SHELL") },
+        }
+
+        result
+    }
 
     #[test]
     fn bash_uses_expected_profile_for_platform() {
-        let previous = std::env::var_os("SHELL");
-        unsafe {
-            std::env::set_var("SHELL", "/bin/bash");
-        }
-
-        let detected = detect_posix_profile();
+        let detected = with_shell("/bin/bash", detect_posix_profile);
         let expected = if cfg!(target_os = "macos") {
             ".bash_profile"
         } else {
@@ -191,31 +206,16 @@ mod tests {
         };
 
         assert_eq!(detected.file_name(), Some(expected.as_ref()));
-
-        match previous {
-            Some(value) => unsafe { std::env::set_var("SHELL", value) },
-            None => unsafe { std::env::remove_var("SHELL") },
-        }
     }
 
     #[test]
     fn zsh_uses_zprofile() {
-        let previous = std::env::var_os("SHELL");
-        unsafe {
-            std::env::set_var("SHELL", "/bin/zsh");
-        }
-
-        let detected = detect_posix_profile();
+        let detected = with_shell("/bin/zsh", detect_posix_profile);
         assert_eq!(
             detected,
             dirs::home_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join(".zprofile")
         );
-
-        match previous {
-            Some(value) => unsafe { std::env::set_var("SHELL", value) },
-            None => unsafe { std::env::remove_var("SHELL") },
-        }
     }
 }
