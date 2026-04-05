@@ -82,38 +82,48 @@ pub fn launcher_root() -> PathBuf {
 }
 
 pub fn detect_posix_profile() -> PathBuf {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let bashrc = home.join(".bashrc");
+    let bash_profile = home.join(".bash_profile");
+    let zprofile = home.join(".zprofile");
+    let fish_config = home.join(".config").join("fish").join("config.fish");
+
     if let Ok(shell) = env::var("SHELL") {
         if shell.ends_with("/zsh") {
-            return dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".zprofile");
+            return zprofile;
         }
         if shell.ends_with("/bash") {
-            return dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".bash_profile");
+            return if cfg!(target_os = "macos") {
+                bash_profile
+            } else {
+                bashrc
+            };
         }
         if shell.ends_with("/fish") {
-            return dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".config")
-                .join("fish")
-                .join("config.fish");
+            return fish_config;
         }
     }
 
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let fish = home.join(".config").join("fish").join("config.fish");
-    let zsh = home.join(".zprofile");
-    let bash = home.join(".bash_profile");
-    if fish.exists() {
-        return fish;
+    if fish_config.exists() {
+        return fish_config;
     }
-    if zsh.exists() {
-        return zsh;
+    if zprofile.exists() {
+        return zprofile;
     }
-    if bash.exists() {
-        return bash;
+    if cfg!(target_os = "macos") {
+        if bash_profile.exists() {
+            return bash_profile;
+        }
+        if bashrc.exists() {
+            return bashrc;
+        }
+    } else {
+        if bashrc.exists() {
+            return bashrc;
+        }
+        if bash_profile.exists() {
+            return bash_profile;
+        }
     }
     home.join(".profile")
 }
@@ -159,4 +169,53 @@ pub fn normalize_path(path: &str) -> String {
         .to_string_lossy()
         .trim_end_matches(['\\', '/'])
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::detect_posix_profile;
+    use std::path::PathBuf;
+
+    #[test]
+    fn bash_uses_expected_profile_for_platform() {
+        let previous = std::env::var_os("SHELL");
+        unsafe {
+            std::env::set_var("SHELL", "/bin/bash");
+        }
+
+        let detected = detect_posix_profile();
+        let expected = if cfg!(target_os = "macos") {
+            ".bash_profile"
+        } else {
+            ".bashrc"
+        };
+
+        assert_eq!(detected.file_name(), Some(expected.as_ref()));
+
+        match previous {
+            Some(value) => unsafe { std::env::set_var("SHELL", value) },
+            None => unsafe { std::env::remove_var("SHELL") },
+        }
+    }
+
+    #[test]
+    fn zsh_uses_zprofile() {
+        let previous = std::env::var_os("SHELL");
+        unsafe {
+            std::env::set_var("SHELL", "/bin/zsh");
+        }
+
+        let detected = detect_posix_profile();
+        assert_eq!(
+            detected,
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".zprofile")
+        );
+
+        match previous {
+            Some(value) => unsafe { std::env::set_var("SHELL", value) },
+            None => unsafe { std::env::remove_var("SHELL") },
+        }
+    }
 }

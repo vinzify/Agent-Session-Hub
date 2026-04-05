@@ -27,7 +27,10 @@ fn normalized_argv0(argv0: &str) -> String {
 }
 
 fn is_generic_entrypoint(argv0: &str) -> bool {
-    matches!(normalized_argv0(argv0).as_str(), "sessionhub")
+    matches!(
+        normalized_argv0(argv0).as_str(),
+        "sessionhub" | "agent-session-hub"
+    )
 }
 
 fn generic_provider(provider: ProviderKind) -> &'static str {
@@ -649,6 +652,7 @@ mod tests {
     fn sessionhub_entrypoint_is_generic() {
         assert!(is_generic_entrypoint("sessionhub"));
         assert!(is_generic_entrypoint("/tmp/sessionhub"));
+        assert!(is_generic_entrypoint("target/debug/agent-session-hub"));
         assert!(!is_generic_entrypoint("csx"));
     }
 
