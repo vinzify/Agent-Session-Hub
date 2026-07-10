@@ -6,13 +6,14 @@ pub fn compress_text(text: &str, max_length: usize) -> String {
     if clean.is_empty() {
         return String::new();
     }
-    if clean.len() <= max_length {
+    if clean.chars().count() <= max_length {
         return clean;
     }
     if max_length <= 3 {
         return ".".repeat(max_length);
     }
-    format!("{}...", &clean[..max_length - 3])
+    let prefix: String = clean.chars().take(max_length - 3).collect();
+    format!("{prefix}...")
 }
 
 pub fn project_name(project_path: &str) -> String {
@@ -74,4 +75,19 @@ pub fn ascii_banner(kind: &str, primary: &str, secondary: &str) -> String {
 
 pub fn escape_sh_single_quotes(value: &str) -> String {
     value.replace('\'', "'\"'\"'")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compress_text;
+
+    #[test]
+    fn compress_text_handles_multibyte_characters() {
+        assert_eq!(compress_text("한글 문자열이 포함된 긴 제목입니다", 12), "한글 문자열이 포...");
+    }
+
+    #[test]
+    fn compress_text_handles_short_limits() {
+        assert_eq!(compress_text("한글입니다", 2), "..");
+    }
 }
