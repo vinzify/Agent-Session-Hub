@@ -173,8 +173,7 @@ pub fn run_fzf(
         },
         "--bind".to_string(),
         format!(
-            "start:reload-sync({}),change:reload-sync({})+first",
-            fzf_shell_command(exe, &format!("{provider_flag} __query")),
+            "change:reload({})+first",
             fzf_shell_command(exe, &format!("{provider_flag} __query {{q}}"))
         ),
         "--header".to_string(),
