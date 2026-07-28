@@ -47,6 +47,29 @@ pub fn format_relative_age(timestamp: DateTime<Local>) -> String {
     format!("{}d ago", delta.num_days())
 }
 
+pub fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["KiB", "MiB", "GiB", "TiB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+
+    let mut value = bytes as f64 / 1024.0;
+    let mut unit = UNITS[0];
+    for next_unit in UNITS.iter().skip(1) {
+        if value < 1024.0 {
+            break;
+        }
+        value /= 1024.0;
+        unit = next_unit;
+    }
+
+    if value >= 10.0 || value.fract() < 0.05 {
+        format!("{value:.0} {unit}")
+    } else {
+        format!("{value:.1} {unit}")
+    }
+}
+
 pub fn ascii_banner(kind: &str, primary: &str, secondary: &str) -> String {
     let kind_text = if kind.trim().is_empty() {
         "ITEM".to_string()
@@ -74,4 +97,19 @@ pub fn ascii_banner(kind: &str, primary: &str, secondary: &str) -> String {
 
 pub fn escape_sh_single_quotes(value: &str) -> String {
     value.replace('\'', "'\"'\"'")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_bytes;
+
+    #[test]
+    fn formats_storage_sizes_compactly() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(1023), "1023 B");
+        assert_eq!(format_bytes(1024), "1 KiB");
+        assert_eq!(format_bytes(1536), "1.5 KiB");
+        assert_eq!(format_bytes(10 * 1024), "10 KiB");
+        assert_eq!(format_bytes(2 * 1024 * 1024), "2 MiB");
+    }
 }

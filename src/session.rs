@@ -41,6 +41,8 @@ pub struct SessionRecord {
     pub preview: String,
     pub display_title: String,
     pub slug: String,
+    pub storage_bytes: u64,
+    pub storage_size_is_estimate: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -188,6 +190,13 @@ fn new_session_record(
     } else {
         format!("{} session {}", provider.display_name(), session_id)
     };
+    let storage_bytes = if provider == ProviderKind::Opencode {
+        0
+    } else {
+        fs::metadata(&file_path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0)
+    };
 
     SessionRecord {
         provider,
@@ -222,6 +231,8 @@ fn new_session_record(
         preview: preview_text,
         display_title,
         slug,
+        storage_bytes,
+        storage_size_is_estimate: provider == ProviderKind::Opencode,
     }
 }
 
@@ -507,12 +518,44 @@ fn opencode_preview_index(conn: &Connection) -> Result<HashMap<String, String>> 
     Ok(previews)
 }
 
+fn add_opencode_storage_sizes(
+    conn: &Connection,
+    query: &str,
+    sizes: &mut HashMap<String, u64>,
+) -> Result<()> {
+    let mut statement = conn.prepare(query)?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    for row in rows {
+        let (session_id, bytes) = row?;
+        *sizes.entry(session_id).or_default() += u64::try_from(bytes).unwrap_or(0);
+    }
+    Ok(())
+}
+
+fn opencode_storage_sizes(conn: &Connection) -> Result<HashMap<String, u64>> {
+    let mut sizes = HashMap::new();
+    add_opencode_storage_sizes(
+        conn,
+        "select session_id, coalesce(sum(length(cast(data as blob))), 0) from message group by session_id",
+        &mut sizes,
+    )?;
+    add_opencode_storage_sizes(
+        conn,
+        "select m.session_id, coalesce(sum(length(cast(p.data as blob))), 0) from part p join message m on m.id = p.message_id group by m.session_id",
+        &mut sizes,
+    )?;
+    Ok(sizes)
+}
+
 fn load_opencode_sessions_from_db(
     db_path: &Path,
     index: &AliasIndex,
 ) -> Result<Vec<SessionRecord>> {
     let conn = Connection::open(db_path).with_context(|| format!("open {}", db_path.display()))?;
     let previews = opencode_preview_index(&conn)?;
+    let storage_sizes = opencode_storage_sizes(&conn)?;
     let mut statement = conn.prepare(
         "select s.id, s.slug, s.directory, s.title, s.time_created, s.time_updated, w.branch from session s left join workspace w on w.id = s.workspace_id where s.time_archived is null order by s.time_updated desc",
     )?;
@@ -545,7 +588,7 @@ fn load_opencode_sessions_from_db(
             .cloned()
             .unwrap_or_else(|| title.clone());
 
-        sessions.push(new_session_record(
+        let mut session = new_session_record(
             ProviderKind::Opencode,
             session_id.clone(),
             timestamp,
@@ -559,7 +602,14 @@ fn load_opencode_sessions_from_db(
             title,
             slug,
             &mut git_cache,
-        ));
+        );
+        session.storage_bytes = storage_sizes.get(&session_id).copied().unwrap_or(0)
+            + session_id.len() as u64
+            + session.slug.len() as u64
+            + session.project_path.len() as u64
+            + session.display_title.len() as u64
+            + session.branch_display.len() as u64;
+        sessions.push(session);
     }
 
     sessions.sort_by(|left, right| {
@@ -819,6 +869,8 @@ mod tests {
             preview: "preview text".to_string(),
             display_title: format!("title {number}"),
             slug: String::new(),
+            storage_bytes: 2048,
+            storage_size_is_estimate: false,
         }
     }
 
@@ -914,5 +966,7 @@ mod tests {
         );
         assert!(session.supports_delete);
         assert_eq!(session.branch_display, "main");
+        assert!(session.storage_bytes > 0);
+        assert!(session.storage_size_is_estimate);
     }
 }

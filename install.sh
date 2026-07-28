@@ -83,17 +83,30 @@ build_local_binary() {
   printf '%s\n' "${source_root}/target/release/agent-session-hub"
 }
 
+atomic_install_binary() {
+  source_path="$1"
+  target_path="$2"
+  staged_path="$(mktemp "${target_path}.tmp.XXXXXX")"
+  if cp "$source_path" "$staged_path" &&
+    chmod +x "$staged_path" &&
+    mv -f "$staged_path" "$target_path"
+  then
+    return 0
+  fi
+  rm -f "$staged_path"
+  return 1
+}
+
 install_binary() {
   binary_path="$1"
 
   mkdir -p "${INSTALL_ROOT}/bin" "$BIN_ROOT"
-  cp "$binary_path" "${INSTALL_ROOT}/bin/agent-session-hub"
-  chmod +x "${INSTALL_ROOT}/bin/agent-session-hub"
-  cp "${INSTALL_ROOT}/bin/agent-session-hub" "${BIN_ROOT}/csx"
-  cp "${INSTALL_ROOT}/bin/agent-session-hub" "${BIN_ROOT}/clx"
-  cp "${INSTALL_ROOT}/bin/agent-session-hub" "${BIN_ROOT}/opx"
-  cp "${INSTALL_ROOT}/bin/agent-session-hub" "${BIN_ROOT}/sessionhub"
-  chmod +x "${BIN_ROOT}/csx" "${BIN_ROOT}/clx" "${BIN_ROOT}/opx" "${BIN_ROOT}/sessionhub"
+  installed_binary="${INSTALL_ROOT}/bin/agent-session-hub"
+  atomic_install_binary "$binary_path" "$installed_binary"
+  atomic_install_binary "$installed_binary" "${BIN_ROOT}/csx"
+  atomic_install_binary "$installed_binary" "${BIN_ROOT}/clx"
+  atomic_install_binary "$installed_binary" "${BIN_ROOT}/opx"
+  atomic_install_binary "$installed_binary" "${BIN_ROOT}/sessionhub"
 }
 
 run_shell_install() {

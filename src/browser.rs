@@ -1,4 +1,4 @@
-use crate::formatting::{ascii_banner, compress_text};
+use crate::formatting::{ascii_banner, compress_text, format_bytes};
 use crate::provider::ProviderKind;
 use crate::session::{DisplaySession, SessionRecord};
 use anyhow::{Context, Result, anyhow};
@@ -42,10 +42,22 @@ fn workspace_row_key(provider: ProviderKind, workspace_key: &str) -> String {
     format!("W:{}:{}", provider.name(), workspace_key)
 }
 
+fn storage_size(bytes: u64, is_estimate: bool) -> String {
+    format!(
+        "{}{}",
+        if is_estimate { "~" } else { "" },
+        format_bytes(bytes)
+    )
+}
+
 pub fn fzf_row(entry: &DisplaySession) -> String {
     let fields = [
         row_key(entry.session.provider, &entry.session.session_id),
         entry.display_number.to_string(),
+        storage_size(
+            entry.session.storage_bytes,
+            entry.session.storage_size_is_estimate,
+        ),
         entry.session.timestamp_text.clone(),
         compress_text(&entry.session.workspace_label, 28),
         compress_text(&entry.session.display_title, 90),
@@ -78,9 +90,17 @@ pub fn fzf_rows(entries: &[DisplaySession]) -> Vec<String> {
             .first()
             .map(|item| item.session.project_path.clone())
             .unwrap_or_default();
+        let total_bytes = items
+            .iter()
+            .map(|item| item.session.storage_bytes)
+            .sum::<u64>();
+        let size_is_estimate = items
+            .iter()
+            .any(|item| item.session.storage_size_is_estimate);
         let header = [
             workspace_row_key(provider, &group_key),
             String::new(),
+            storage_size(total_bytes, size_is_estimate),
             String::new(),
             format!("[{}] {workspace_label}", items.len()),
             compress_text(&project_path, 100),
@@ -166,7 +186,7 @@ fn run_fzf_with_program(
         "--delimiter".to_string(),
         "\t".to_string(),
         "--with-nth".to_string(),
-        "2,3,4,5".to_string(),
+        "2,3,4,5,6".to_string(),
         "--nth".to_string(),
         "2".to_string(),
         "--preview".to_string(),
@@ -231,6 +251,13 @@ pub fn session_preview(session: &DisplaySession, project_session_count: usize) -
         ),
         format!("Provider: {}", session.session.provider_label),
         format!("Title:    {}", session.session.display_title),
+        format!(
+            "Size:     {}",
+            storage_size(
+                session.session.storage_bytes,
+                session.session.storage_size_is_estimate
+            )
+        ),
         format!("Project:  {}", session.session.project_path),
         if session.session.repo_root.is_empty() {
             String::new()
@@ -301,6 +328,13 @@ pub fn workspace_preview(project_sessions: &[&DisplaySession]) -> String {
     } else {
         String::new()
     };
+    let total_bytes = project_sessions
+        .iter()
+        .map(|entry| entry.session.storage_bytes)
+        .sum::<u64>();
+    let size_is_estimate = project_sessions
+        .iter()
+        .any(|entry| entry.session.storage_size_is_estimate);
 
     let mut lines = vec![
         ascii_banner(
@@ -309,6 +343,7 @@ pub fn workspace_preview(project_sessions: &[&DisplaySession]) -> String {
             &format!("{} sessions", project_sessions.len()),
         ),
         format!("Provider: {}", latest.session.provider_label),
+        format!("Size:     {}", storage_size(total_bytes, size_is_estimate)),
         format!("Path:     {}", latest.session.project_path),
     ];
     if !latest.session.repo_root.is_empty() {
@@ -331,8 +366,12 @@ pub fn workspace_preview(project_sessions: &[&DisplaySession]) -> String {
     ]);
     for entry in project_sessions.iter().take(3) {
         lines.push(format!(
-            "  {:<7} {}",
+            "  {:<7} {:>9}  {}",
             entry.session.last_updated_age,
+            storage_size(
+                entry.session.storage_bytes,
+                entry.session.storage_size_is_estimate
+            ),
             compress_text(&entry.session.display_title, 52)
         ));
     }
@@ -411,7 +450,7 @@ pub fn parse_row_target(raw: &str) -> (String, String, String) {
     if raw.contains('\t') {
         let columns = raw.split('\t').collect::<Vec<_>>();
         let session_id = columns.first().copied().unwrap_or_default();
-        let project_path = columns.get(5).copied().unwrap_or_default();
+        let project_path = columns.get(6).copied().unwrap_or_default();
         return (
             session_id.trim().to_string(),
             String::new(),
@@ -517,6 +556,7 @@ pub fn ensure_fzf() -> Result<()> {
 mod tests {
     use super::{
         normalize_selected_value, parse_fzf_output, parse_row_target, run_fzf_with_program,
+        storage_size,
     };
     use crate::provider::ProviderKind;
     #[cfg(unix)]
@@ -564,6 +604,20 @@ S:codex:abc123
             parse_row_target("W:codex:repo|main			[2] repo"),
             (String::new(), "repo|main".to_string(), String::new())
         );
+        assert_eq!(
+            parse_row_target("legacy-id	1	2 KiB	2026-03-28 12:00	repo	Title	/tmp/project	Preview"),
+            (
+                "legacy-id".to_string(),
+                String::new(),
+                "/tmp/project".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn marks_estimated_storage_sizes() {
+        assert_eq!(storage_size(1536, false), "1.5 KiB");
+        assert_eq!(storage_size(1536, true), "~1.5 KiB");
     }
 
     #[cfg(unix)]

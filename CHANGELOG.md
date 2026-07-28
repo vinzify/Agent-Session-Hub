@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.8
+
+- Added per-session storage sizes to browser rows and previews, plus combined workspace totals
+- Added approximate per-session payload sizes for OpenCode sessions stored in its shared SQLite database
+- Updated the POSIX installer to replace active launcher binaries atomically instead of failing with `Text file busy`
+
 ## 0.3.7
 
 - Fixed `fzf` session loading to avoid a broken-pipe race when the initial reload closes stdin
