@@ -296,6 +296,13 @@ fn interactive_reset(
     index.save(provider)
 }
 
+fn is_single_workspace_selection(selected_ids: &[String]) -> bool {
+    selected_ids.len() == 1
+        && selected_ids
+            .first()
+            .is_some_and(|value| value.starts_with("W:"))
+}
+
 fn browse_command(provider: ProviderKind, query: &str) -> Result<()> {
     ensure_fzf()?;
     let exe = current_exe()?;
@@ -308,7 +315,7 @@ fn browse_command(provider: ProviderKind, query: &str) -> Result<()> {
         if rows.is_empty() {
             return Ok(());
         }
-        let Some(result) = run_fzf(provider, &query, &rows, &exe)? else {
+        let Some(result) = run_fzf(provider, &query, &exe)? else {
             return Ok(());
         };
         let selected = resolve_selected_sessions(&display, &result.session_ids);
@@ -318,7 +325,7 @@ fn browse_command(provider: ProviderKind, query: &str) -> Result<()> {
 
         match result.action.as_str() {
             "enter" => {
-                if selected.len() > 1 {
+                if selected.len() > 1 && !is_single_workspace_selection(&result.session_ids) {
                     return Err(anyhow!(
                         "Resume only supports one session at a time. Clear multi-select or choose a single row."
                     ));
@@ -444,7 +451,7 @@ fn hidden_select(provider: ProviderKind, args: &[String]) -> Result<()> {
         if rows.is_empty() {
             return Ok(());
         }
-        let Some(result) = run_fzf(provider, &query, &rows, &exe)? else {
+        let Some(result) = run_fzf(provider, &query, &exe)? else {
             return Ok(());
         };
         let selected = resolve_selected_sessions(&display, &result.session_ids);
@@ -454,7 +461,7 @@ fn hidden_select(provider: ProviderKind, args: &[String]) -> Result<()> {
 
         match result.action.as_str() {
             "enter" => {
-                if selected.len() > 1 {
+                if selected.len() > 1 && !is_single_workspace_selection(&result.session_ids) {
                     return Err(anyhow!(
                         "Resume only supports one session at a time. Clear multi-select or choose a single row."
                     ));
@@ -668,5 +675,19 @@ mod tests {
             Some(ProviderKind::Opencode)
         );
         assert_eq!(generic_provider_from_arg("unknown"), None);
+    }
+
+    #[test]
+    fn one_workspace_header_is_a_single_resume_selection() {
+        assert!(is_single_workspace_selection(&[
+            "W:codex:repo|main".to_string()
+        ]));
+        assert!(!is_single_workspace_selection(&[
+            "W:codex:repo|main".to_string(),
+            "S:codex:abc123".to_string(),
+        ]));
+        assert!(!is_single_workspace_selection(&[
+            "S:codex:abc123".to_string()
+        ]));
     }
 }

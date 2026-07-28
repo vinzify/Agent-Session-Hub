@@ -144,8 +144,16 @@ pub fn browser_header(provider: ProviderKind) -> String {
 pub fn run_fzf(
     provider: ProviderKind,
     initial_query: &str,
-    rows: &[String],
     exe: &std::path::Path,
+) -> Result<Option<BrowserResult>> {
+    run_fzf_with_program(provider, initial_query, exe, std::path::Path::new("fzf"))
+}
+
+fn run_fzf_with_program(
+    provider: ProviderKind,
+    initial_query: &str,
+    exe: &std::path::Path,
+    fzf_program: &std::path::Path,
 ) -> Result<Option<BrowserResult>> {
     let provider_flag = format!("--provider {}", provider.name());
     let mut args = vec![
@@ -186,19 +194,17 @@ pub fn run_fzf(
         args.push(initial_query.to_string());
     }
 
-    let mut command = Command::new("fzf");
+    let mut command = Command::new(fzf_program);
     command.args(&args);
     command
-        .stdin(Stdio::piped())
+        // The start reload is the sole source of rows. Streaming the same rows
+        // through stdin races with fzf closing that pipe for reload and can
+        // surface EPIPE only after the user leaves the selector.
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
 
-    let mut child = command.spawn().context("spawn fzf")?;
-    if let Some(stdin) = child.stdin.as_mut() {
-        for row in rows {
-            writeln!(stdin, "{row}")?;
-        }
-    }
+    let child = command.spawn().context("spawn fzf")?;
     let output = child.wait_with_output().context("wait for fzf")?;
     if !output.status.success() {
         return Ok(None);
@@ -509,7 +515,16 @@ pub fn ensure_fzf() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_selected_value, parse_fzf_output, parse_row_target};
+    use super::{
+        normalize_selected_value, parse_fzf_output, parse_row_target, run_fzf_with_program,
+    };
+    use crate::provider::ProviderKind;
+    #[cfg(unix)]
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
+    use std::path::Path;
 
     #[test]
     fn strips_full_fzf_rows_to_first_column() {
@@ -549,5 +564,32 @@ S:codex:abc123
             parse_row_target("W:codex:repo|main			[2] repo"),
             (String::new(), "repo|main".to_string(), String::new())
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fzf_reload_does_not_receive_a_competing_stdin_stream() {
+        let temp = tempfile::tempdir().unwrap();
+        let fake_fzf = temp.path().join("fzf");
+        fs::write(
+            &fake_fzf,
+            "#!/bin/sh\nif IFS= read -r _row; then exit 20; fi\nprintf '\\nS:codex:abc123\\n'\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&fake_fzf).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&fake_fzf, permissions).unwrap();
+
+        let result = run_fzf_with_program(
+            ProviderKind::Codex,
+            "",
+            Path::new("/tmp/agent-session-hub"),
+            &fake_fzf,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(result.action, "enter");
+        assert_eq!(result.session_ids, vec!["S:codex:abc123"]);
     }
 }

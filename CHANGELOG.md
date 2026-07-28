@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.7
+
+- Fixed `fzf` session loading to avoid a broken-pipe race when the initial reload closes stdin
+- Fixed project-header selection to resume the latest session instead of treating the project as an invalid multi-selection
+
 ## 0.3.6
 
 - Fixed Windows `fzf` preview and query reload commands to quote the installer binary correctly
