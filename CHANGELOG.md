@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.10
+
+- Collapsed generated Codex Security sessions into one expandable row per scan run
+- Kept generated scan chats out of normal conversation numbering
+- Added `csx cleanup` with category and retention filters, a non-destructive dry run, interactive group selection, and exact confirmation before deletion
+- Protected ordinary root chats and retained parent chats when cleaning linked agents
+- Documented scan grouping, storage cleanup defaults, examples, and safety guarantees for public users
+
 ## 0.3.9
 
 - Grouped Codex subagent sessions beneath their connected conversations instead of listing them as ordinary chats

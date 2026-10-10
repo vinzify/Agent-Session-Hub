@@ -1,5 +1,6 @@
 mod app;
 mod browser;
+mod cleanup;
 mod config;
 mod formatting;
 mod git;

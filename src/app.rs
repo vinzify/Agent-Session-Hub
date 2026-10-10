@@ -1,8 +1,10 @@
 use crate::browser::{
     confirm_delete, ensure_fzf, fzf_rows, parse_row_target, resolve_selected_sessions, run_fzf,
-    write_preview,
+    scan_group_marker, write_preview,
 };
+use crate::cleanup::{CleanupGroup, CleanupPolicy, cleanup_groups, select_cleanup_groups};
 use crate::config::AliasIndex;
+use crate::formatting::format_bytes;
 use crate::paths::{config_root, current_exe, powershell_profile_path, provider_session_root};
 use crate::provider::ProviderKind;
 use crate::session::{display_sessions, filter_display_sessions, find_session, load_sessions};
@@ -11,7 +13,8 @@ use crate::shell::{
     uninstall_posix_shell_integration, uninstall_powershell_shell_integration,
 };
 use anyhow::{Context, Result, anyhow};
-use std::collections::BTreeSet;
+use chrono::{Duration, Local};
+use std::collections::{BTreeSet, HashSet};
 use std::env;
 use std::fs;
 use std::io::{self, Write};
@@ -194,6 +197,7 @@ fn dispatch(provider: ProviderKind, args: &[String]) -> Result<()> {
         "rename" => rename_command(provider, &args[1..]),
         "reset" => reset_command(provider, &args[1..]),
         "delete" => delete_command(provider, &args[1..]),
+        "cleanup" => cleanup_command(provider, &args[1..]),
         "doctor" => doctor_command(provider),
         "install-shell" => install_shell_command(provider),
         "uninstall-shell" => uninstall_shell_command(provider),
@@ -316,8 +320,20 @@ fn connected_chat<'a>(
 
 fn toggle_agents(
     selected: &[&crate::session::DisplaySession],
+    selected_ids: &[String],
     expanded_roots: &mut BTreeSet<String>,
 ) {
+    if selected_ids.len() == 1
+        && selected_ids[0].starts_with("W:")
+        && let Some(group_key) = selected.first().map(|entry| entry.group_key.as_str())
+        && group_key.starts_with("security-scan:")
+    {
+        let marker = scan_group_marker(group_key);
+        if !expanded_roots.remove(&marker) {
+            expanded_roots.insert(marker);
+        }
+        return;
+    }
     let roots = selected
         .iter()
         .map(|entry| {
@@ -405,7 +421,7 @@ fn browse_command(provider: ProviderKind, query: &str) -> Result<()> {
                 }
                 return resume_session(&connected_chat(&display, selected[0]).session);
             }
-            "ctrl-a" => toggle_agents(&selected, &mut expanded_roots),
+            "ctrl-a" => toggle_agents(&selected, &result.session_ids, &mut expanded_roots),
             "ctrl-d" => {
                 let targets = with_connected_agents(&display, &selected);
                 interactive_delete(provider, &targets)?
@@ -490,6 +506,220 @@ fn delete_command(provider: ProviderKind, args: &[String]) -> Result<()> {
     index.save(provider)
 }
 
+fn parse_cleanup_age(value: &str) -> Result<Duration> {
+    let normalized = value.trim().to_ascii_lowercase();
+    let (number, multiplier) = if let Some(value) = normalized.strip_suffix('h') {
+        (value, 60 * 60)
+    } else if let Some(value) = normalized.strip_suffix('w') {
+        (value, 7 * 24 * 60 * 60)
+    } else if let Some(value) = normalized.strip_suffix('d') {
+        (value, 24 * 60 * 60)
+    } else {
+        (normalized.as_str(), 24 * 60 * 60)
+    };
+    let amount = number
+        .parse::<i64>()
+        .with_context(|| format!("invalid age: {value}"))?;
+    if amount < 0 {
+        return Err(anyhow!("cleanup age cannot be negative"));
+    }
+    amount
+        .checked_mul(multiplier)
+        .map(Duration::seconds)
+        .ok_or_else(|| anyhow!("cleanup age is too large"))
+}
+
+fn cleanup_usage(provider: ProviderKind) {
+    let launcher = provider.launcher_name();
+    println!("{launcher} cleanup [options]");
+    println!();
+    println!("Options:");
+    println!("  --dry-run            Print candidates without deleting");
+    println!("  --security-scans      Include only generated security scans");
+    println!("  --agents              Include only old agents linked to retained chats");
+    println!("  --orphans             Include only agents whose root chat is missing");
+    println!("  --older-than <age>    Override retention age (examples: 12h, 7d, 4w)");
+    println!();
+    println!("Defaults: security scans 7d, linked agents 30d, orphan agents 7d.");
+    println!("Normal root chats are never cleanup candidates.");
+}
+
+fn parse_cleanup_options(args: &[String]) -> Result<(CleanupPolicy, bool)> {
+    let category_filter = args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "--security-scans" | "--agents" | "--orphans"));
+    let mut policy = CleanupPolicy {
+        include_security_scans: !category_filter,
+        include_linked_agents: !category_filter,
+        include_orphan_agents: !category_filter,
+        ..CleanupPolicy::default()
+    };
+    let mut dry_run = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--dry-run" => dry_run = true,
+            "--security-scans" => policy.include_security_scans = true,
+            "--agents" => policy.include_linked_agents = true,
+            "--orphans" => policy.include_orphan_agents = true,
+            "--older-than" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| anyhow!("--older-than requires an age"))?;
+                let age = parse_cleanup_age(value)?;
+                policy.security_scan_age = age;
+                policy.linked_agent_age = age;
+                policy.orphan_agent_age = age;
+                index += 1;
+            }
+            "--help" | "-h" => {}
+            unknown => return Err(anyhow!("unknown cleanup option: {unknown}")),
+        }
+        index += 1;
+    }
+    Ok((policy, dry_run))
+}
+
+fn print_cleanup_groups(groups: &[CleanupGroup]) {
+    let total_sessions = groups
+        .iter()
+        .map(|group| group.session_ids.len())
+        .sum::<usize>();
+    let total_bytes = groups.iter().map(|group| group.storage_bytes).sum::<u64>();
+    println!(
+        "{} cleanup groups · {} sessions · {} reclaimable",
+        groups.len(),
+        total_sessions,
+        format_bytes(total_bytes)
+    );
+    println!();
+    let now = Local::now();
+    for group in groups {
+        println!(
+            "{:<14} {:>9}  {:>5}d  {:>4} sessions  {}",
+            group.kind.label(),
+            format_bytes(group.storage_bytes),
+            group.age_days(now),
+            group.session_ids.len(),
+            group.title
+        );
+        if !group.detail.trim().is_empty() {
+            println!("  {}", group.detail);
+        }
+    }
+}
+
+fn confirm_cleanup(groups: &[&CleanupGroup]) -> Result<bool> {
+    let sessions = groups
+        .iter()
+        .map(|group| group.session_ids.len())
+        .sum::<usize>();
+    let bytes = groups.iter().map(|group| group.storage_bytes).sum::<u64>();
+    eprintln!();
+    eprintln!(
+        "Selected {} groups: {} session files, {}",
+        groups.len(),
+        sessions,
+        format_bytes(bytes)
+    );
+    for group in groups.iter().take(8) {
+        eprintln!(
+            "  - {}: {} ({} sessions, {})",
+            group.kind.label(),
+            group.title,
+            group.session_ids.len(),
+            format_bytes(group.storage_bytes)
+        );
+    }
+    if groups.len() > 8 {
+        eprintln!("  - ... and {} more groups", groups.len() - 8);
+    }
+    eprintln!("Normal root chats are preserved by agent cleanup.");
+    eprintln!("Security-scan groups include their generated root and agent logs.");
+    eprint!("Type DELETE to permanently remove these session files: ");
+    io::stderr().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    Ok(input.trim() == "DELETE")
+}
+
+fn cleanup_command(provider: ProviderKind, args: &[String]) -> Result<()> {
+    if provider != ProviderKind::Codex {
+        return Err(anyhow!(
+            "cleanup currently supports Codex sessions through csx only"
+        ));
+    }
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "--help" | "-h"))
+    {
+        cleanup_usage(provider);
+        return Ok(());
+    }
+    let (policy, dry_run) = parse_cleanup_options(args)?;
+    let (mut alias_index, sessions) = load_index_and_sessions(provider)?;
+    let groups = cleanup_groups(&sessions, &policy, Local::now());
+    if groups.is_empty() {
+        println!("No cleanup candidates match the selected retention policy.");
+        return Ok(());
+    }
+    if dry_run {
+        print_cleanup_groups(&groups);
+        return Ok(());
+    }
+
+    ensure_fzf()?;
+    let selected_keys = select_cleanup_groups(&groups)?;
+    if selected_keys.is_empty() {
+        return Ok(());
+    }
+    let selected_key_set = selected_keys.into_iter().collect::<HashSet<_>>();
+    let selected_groups = groups
+        .iter()
+        .filter(|group| selected_key_set.contains(&group.key))
+        .collect::<Vec<_>>();
+    if !confirm_cleanup(&selected_groups)? {
+        println!("Cleanup cancelled.");
+        return Ok(());
+    }
+
+    let selected_ids = selected_groups
+        .iter()
+        .flat_map(|group| group.session_ids.iter().cloned())
+        .collect::<HashSet<_>>();
+    let mut targets = sessions
+        .iter()
+        .filter(|session| selected_ids.contains(&session.session_id))
+        .collect::<Vec<_>>();
+    targets.sort_by_key(|session| !session.is_agent);
+    let mut deleted = 0usize;
+    let mut reclaimed = 0u64;
+    let mut failed = 0usize;
+    for session in targets {
+        match delete_session(provider, session, &mut alias_index) {
+            Ok(()) => {
+                deleted += 1;
+                reclaimed += session.storage_bytes;
+            }
+            Err(error) => {
+                failed += 1;
+                eprintln!("[failed] {} {error}", session.session_id);
+            }
+        }
+    }
+    alias_index.save(provider)?;
+    println!(
+        "Cleanup complete: {deleted} session files removed, {} reclaimed{}.",
+        format_bytes(reclaimed),
+        if failed == 0 {
+            String::new()
+        } else {
+            format!(", {failed} failed")
+        }
+    );
+    Ok(())
+}
+
 fn hidden_preview(provider: ProviderKind, args: &[String]) -> Result<()> {
     let (session_id, workspace_key, project_path) = if let Some(raw) = args.first() {
         parse_row_target(raw)
@@ -547,10 +777,10 @@ fn hidden_query(provider: ProviderKind, args: &[String]) -> Result<()> {
             return Err(error.into());
         }
     }
-    if let Err(error) = output.flush() {
-        if error.kind() != io::ErrorKind::BrokenPipe {
-            return Err(error.into());
-        }
+    if let Err(error) = output.flush()
+        && error.kind() != io::ErrorKind::BrokenPipe
+    {
+        return Err(error.into());
     }
     Ok(())
 }
@@ -596,7 +826,7 @@ fn hidden_select(provider: ProviderKind, args: &[String]) -> Result<()> {
                 );
                 return Ok(());
             }
-            "ctrl-a" => toggle_agents(&selected, &mut expanded_roots),
+            "ctrl-a" => toggle_agents(&selected, &result.session_ids, &mut expanded_roots),
             "ctrl-d" => {
                 let targets = with_connected_agents(&display, &selected);
                 interactive_delete(provider, &targets)?
@@ -763,6 +993,9 @@ fn usage(provider: ProviderKind) -> Result<()> {
     if provider.supports_delete() {
         println!("{} delete <session-id...>", provider.launcher_name());
     }
+    if provider == ProviderKind::Codex {
+        println!("{} cleanup [options]", provider.launcher_name());
+    }
     println!("{} doctor", provider.launcher_name());
     println!("{} install-shell", provider.launcher_name());
     println!("{} uninstall-shell", provider.launcher_name());
@@ -817,5 +1050,31 @@ mod tests {
         assert!(!is_single_workspace_selection(&[
             "S:codex:abc123".to_string()
         ]));
+    }
+
+    #[test]
+    fn cleanup_ages_accept_hours_days_weeks_and_bare_days() {
+        assert_eq!(parse_cleanup_age("12h").unwrap(), Duration::hours(12));
+        assert_eq!(parse_cleanup_age("7d").unwrap(), Duration::days(7));
+        assert_eq!(parse_cleanup_age("4w").unwrap(), Duration::weeks(4));
+        assert_eq!(parse_cleanup_age("30").unwrap(), Duration::days(30));
+        assert!(parse_cleanup_age("-1d").is_err());
+        assert!(parse_cleanup_age("tomorrow").is_err());
+    }
+
+    #[test]
+    fn cleanup_category_flags_select_only_requested_types() {
+        let args = vec![
+            "--agents".to_string(),
+            "--older-than".to_string(),
+            "90d".to_string(),
+            "--dry-run".to_string(),
+        ];
+        let (policy, dry_run) = parse_cleanup_options(&args).unwrap();
+        assert!(dry_run);
+        assert!(!policy.include_security_scans);
+        assert!(policy.include_linked_agents);
+        assert!(!policy.include_orphan_agents);
+        assert_eq!(policy.linked_agent_age, Duration::days(90));
     }
 }

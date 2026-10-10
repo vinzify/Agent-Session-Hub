@@ -58,6 +58,49 @@ pub struct DisplaySession {
     pub group_key: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SecurityScanIdentity {
+    pub key: String,
+    pub label: String,
+    pub root_path: String,
+}
+
+pub fn security_scan_identity(project_path: &str) -> Option<SecurityScanIdentity> {
+    let normalized = project_path.replace('\\', "/");
+    let components = normalized
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .collect::<Vec<_>>();
+    let scan_index = components.iter().position(|component| {
+        component
+            .to_ascii_lowercase()
+            .starts_with("codex-security-scans-")
+    })?;
+    let repository = components.get(scan_index + 1).copied().unwrap_or("unknown");
+    let run = components.get(scan_index + 2).copied().unwrap_or("scan");
+    let prefix = if normalized.starts_with('/') { "/" } else { "" };
+    let root_path = format!(
+        "{prefix}{}",
+        components[..=(scan_index + 2).min(components.len() - 1)].join("/")
+    );
+    Some(SecurityScanIdentity {
+        key: root_path.to_ascii_lowercase(),
+        label: format!("{repository} · {run}"),
+        root_path,
+    })
+}
+
+fn session_group_key(session: &SessionRecord) -> String {
+    if let Some(scan) = security_scan_identity(&session.project_path) {
+        return format!("security-scan:{}", scan.key);
+    }
+    if session.workspace_key.trim().is_empty() {
+        session.project_key.clone()
+    } else {
+        session.workspace_key.clone()
+    }
+}
+
 fn meaningful_user_text(text: &str) -> bool {
     let clean = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if clean.len() < 12 {
@@ -725,21 +768,13 @@ pub fn display_sessions(sessions: &[SessionRecord]) -> Vec<DisplaySession> {
         .iter()
         .filter(|session| !session.is_agent)
         .map(|session| {
-            let key = if session.workspace_key.trim().is_empty() {
-                session.project_key.clone()
-            } else {
-                session.workspace_key.clone()
-            };
+            let key = session_group_key(session);
             ((session.provider, session.session_id.clone()), key)
         })
         .collect::<HashMap<_, _>>();
     let mut grouped = HashMap::<(ProviderKind, String), Vec<SessionRecord>>::new();
     for session in sessions {
-        let own_key = if session.workspace_key.trim().is_empty() {
-            session.project_key.clone()
-        } else {
-            session.workspace_key.clone()
-        };
+        let own_key = session_group_key(session);
         let key = if session.is_agent {
             root_group_keys
                 .get(&(session.provider, session.root_session_id.clone()))
@@ -776,12 +811,13 @@ pub fn display_sessions(sessions: &[SessionRecord]) -> Vec<DisplaySession> {
     let mut conversation_number = 0;
     for (_, group_key, _, _, items) in ordered_projects {
         for session in items {
-            if !session.is_agent {
+            let is_generated_scan = security_scan_identity(&session.project_path).is_some();
+            if !session.is_agent && !is_generated_scan {
                 conversation_number += 1;
             }
             display.push(DisplaySession {
                 group_key: group_key.clone(),
-                display_number: if session.is_agent {
+                display_number: if session.is_agent || is_generated_scan {
                     0
                 } else {
                     conversation_number
@@ -804,7 +840,9 @@ pub fn filter_display_sessions(sessions: &[SessionRecord], query: &str) -> Vec<D
         return display
             .into_iter()
             .filter(|entry| {
-                !entry.session.is_agent && entry.display_number.to_string().starts_with(normalized)
+                !entry.session.is_agent
+                    && entry.display_number > 0
+                    && entry.display_number.to_string().starts_with(normalized)
             })
             .collect();
     }
@@ -882,7 +920,7 @@ pub fn filter_display_sessions(sessions: &[SessionRecord], query: &str) -> Vec<D
                             .to_ascii_lowercase()
                             .contains(&needle)
                 } else {
-                    entry
+                    let project_match = entry
                         .session
                         .project_name
                         .to_ascii_lowercase()
@@ -891,7 +929,10 @@ pub fn filter_display_sessions(sessions: &[SessionRecord], query: &str) -> Vec<D
                             .session
                             .repo_name
                             .to_ascii_lowercase()
-                            .contains(&needle)
+                            .contains(&needle);
+                    project_match
+                        || security_scan_identity(&entry.session.project_path)
+                            .is_some_and(|scan| scan.label.to_ascii_lowercase().contains(&needle))
                 }
             }
         })
@@ -1052,6 +1093,47 @@ mod tests {
         assert_eq!(root.group_key, agent.group_key);
         assert_eq!(root.display_number, 1);
         assert_eq!(agent.display_number, 0);
+    }
+
+    #[test]
+    fn recognizes_and_groups_generated_security_scan_workspaces() {
+        let identity = security_scan_identity(
+            "/tmp/codex-security-scans-abc123/linux-x64/run-42/output/nested",
+        )
+        .expect("security scan identity");
+        assert_eq!(identity.label, "linux-x64 · run-42");
+        assert_eq!(
+            identity.root_path,
+            "/tmp/codex-security-scans-abc123/linux-x64/run-42"
+        );
+
+        let mut scan_root = sample_session("scan-root", 1);
+        scan_root.project_path =
+            "/tmp/codex-security-scans-abc123/linux-x64/run-42/output".to_string();
+        scan_root.workspace_key = "output|main".to_string();
+        let mut scan_agent = sample_session("scan-agent", 2);
+        scan_agent.project_path =
+            "/tmp/codex-security-scans-abc123/linux-x64/run-42/output/worktree".to_string();
+        scan_agent.workspace_key = "different|main".to_string();
+        scan_agent.is_agent = true;
+        scan_agent.root_session_id = scan_root.session_id.clone();
+        let normal = sample_session("normal", 3);
+
+        let display = display_sessions(&[scan_root, scan_agent, normal]);
+        let scan_entries = display
+            .iter()
+            .filter(|entry| entry.group_key.starts_with("security-scan:"))
+            .collect::<Vec<_>>();
+        assert_eq!(scan_entries.len(), 2);
+        assert!(scan_entries.iter().all(|entry| entry.display_number == 0));
+        assert_eq!(
+            display
+                .iter()
+                .find(|entry| entry.session.project_name == "normal")
+                .unwrap()
+                .display_number,
+            1
+        );
     }
 
     #[test]

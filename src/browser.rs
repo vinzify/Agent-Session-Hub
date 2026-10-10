@@ -1,6 +1,6 @@
 use crate::formatting::{ascii_banner, compress_text, format_bytes};
 use crate::provider::ProviderKind;
-use crate::session::{DisplaySession, SessionRecord};
+use crate::session::{DisplaySession, SessionRecord, security_scan_identity};
 use anyhow::{Context, Result, anyhow};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
@@ -40,6 +40,15 @@ fn fzf_shell_command(exe: &std::path::Path, command: &str) -> String {
 
 fn workspace_row_key(provider: ProviderKind, workspace_key: &str) -> String {
     format!("W:{}:{}", provider.name(), workspace_key)
+}
+
+pub fn scan_group_marker(group_key: &str) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in group_key.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("scan-{hash:016x}")
 }
 
 fn storage_size(bytes: u64, is_estimate: bool) -> String {
@@ -147,6 +156,8 @@ pub fn fzf_rows(
 
     let mut rows = Vec::new();
     for ((provider, group_key), items) in groups {
+        let is_security_scan = group_key.starts_with("security-scan:");
+        let scan_expanded = expanded_roots.contains(&scan_group_marker(&group_key));
         let all_items = all_entries
             .iter()
             .filter(|item| item.session.provider == provider && item.group_key == group_key)
@@ -157,11 +168,23 @@ pub fn fzf_rows(
             .find(|item| !item.session.is_agent)
             .or_else(|| all_items.first().copied())
             .or_else(|| items.first().copied());
-        let workspace_label = representative
-            .map(|item| item.session.workspace_label.clone())
+        let scan_identity =
+            representative.and_then(|item| security_scan_identity(&item.session.project_path));
+        let workspace_label = scan_identity
+            .as_ref()
+            .map(|scan| {
+                format!(
+                    "{} Security scan · {}",
+                    if scan_expanded { "▼" } else { "▶" },
+                    scan.label
+                )
+            })
+            .or_else(|| representative.map(|item| item.session.workspace_label.clone()))
             .unwrap_or_default();
-        let project_path = representative
-            .map(|item| item.session.project_path.clone())
+        let project_path = scan_identity
+            .as_ref()
+            .map(|scan| scan.root_path.clone())
+            .or_else(|| representative.map(|item| item.session.project_path.clone()))
             .unwrap_or_default();
         let total_bytes = all_items
             .iter()
@@ -178,7 +201,9 @@ pub fn fzf_rows(
             .iter()
             .filter(|item| item.session.is_agent)
             .count();
-        let count_label = if agent_count > 0 {
+        let count_label = if is_security_scan {
+            format!("{conversation_count} scan chats · {agent_count} agents")
+        } else if agent_count > 0 {
             format!("{conversation_count} chats · {agent_count} agents")
         } else {
             format!("{conversation_count} chats")
@@ -207,6 +232,9 @@ pub fn fzf_rows(
             .collect::<Vec<_>>();
         roots.sort_by(|left, right| right.session.timestamp.cmp(&left.session.timestamp));
         let mut emitted = BTreeSet::new();
+        if is_security_scan && !scan_expanded && !reveal_agents {
+            continue;
+        }
         for item in roots {
             let agents = all_items
                 .iter()
@@ -255,9 +283,14 @@ pub fn fzf_rows(
                     item.session.display_title,
                 )
             };
+            let number_label = if item.display_number == 0 {
+                String::new()
+            } else {
+                item.display_number.to_string()
+            };
             rows.push(fzf_row_with_labels(
                 item,
-                item.display_number.to_string(),
+                number_label,
                 item.session.workspace_label.clone(),
                 title,
             ));
@@ -594,9 +627,10 @@ pub fn workspace_preview(project_sessions: &[&DisplaySession]) -> String {
         .copied()
         .max_by_key(|entry| entry.session.last_updated)
         .unwrap_or(representative);
+    let scan_identity = security_scan_identity(&representative.session.project_path);
     let session_numbers = project_sessions
         .iter()
-        .filter(|entry| !entry.session.is_agent)
+        .filter(|entry| !entry.session.is_agent && entry.display_number > 0)
         .map(|entry| entry.display_number)
         .collect::<Vec<_>>();
     let range_text = if session_numbers.is_empty() {
@@ -638,7 +672,9 @@ pub fn workspace_preview(project_sessions: &[&DisplaySession]) -> String {
         .filter(|entry| !entry.session.is_agent)
         .count();
     let agent_count = project_sessions.len() - conversation_count;
-    let count_text = if agent_count > 0 {
+    let count_text = if scan_identity.is_some() {
+        format!("{conversation_count} scan chats · {agent_count} agents")
+    } else if agent_count > 0 {
         format!("{conversation_count} chats · {agent_count} agents")
     } else {
         format!("{conversation_count} chats")
@@ -646,12 +682,21 @@ pub fn workspace_preview(project_sessions: &[&DisplaySession]) -> String {
     let mut lines = vec![
         ascii_banner(
             "workspace",
-            &representative.session.workspace_label,
+            &scan_identity
+                .as_ref()
+                .map(|scan| format!("Security scan · {}", scan.label))
+                .unwrap_or_else(|| representative.session.workspace_label.clone()),
             &count_text,
         ),
         format!("Provider: {}", representative.session.provider_label),
         format!("Size:     {}", storage_size(total_bytes, size_is_estimate)),
-        format!("Path:     {}", representative.session.project_path),
+        format!(
+            "Path:     {}",
+            scan_identity
+                .as_ref()
+                .map(|scan| scan.root_path.as_str())
+                .unwrap_or(&representative.session.project_path)
+        ),
     ];
     if !representative.session.repo_root.is_empty() {
         lines.push(format!("Repo:     {}", representative.session.repo_root));
