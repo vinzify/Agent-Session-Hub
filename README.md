@@ -13,6 +13,7 @@ Agent Session Hub is a native Rust CLI that gives AI coding tools a shared, `fzf
 - One session picker across `codex`, `claude`, and `opencode`
 - Resume from the right project directory instead of hunting through history
 - Preview sessions before reopening them
+- Keep Codex agents collapsed beneath their connected conversations, with separate storage totals
 - Rename, reset, and delete sessions without leaving the terminal
 - Keep fast daily commands: `csx`, `clx`, and `opx`
 
@@ -63,6 +64,12 @@ csx rename <session-id> --name "Fix auth bug"
 opx delete <session-id>
 ```
 
+Inside the picker, press `Ctrl-A` on a Codex conversation to expand or collapse its
+connected agent tree. Searching for an agent name or path reveals that agent with
+its parent conversation. Deleting a conversation also deletes its connected agent
+session files after the confirmation lists both counts; deleting an individual
+expanded agent affects only that agent.
+
 ## What Makes It Different
 
 | Capability | Provider-native history | Agent Session Hub |
@@ -72,6 +79,7 @@ opx delete <session-id>
 | Preview pane before resume | Rare | Yes |
 | Resume from the matching project directory | Varies | Yes |
 | Repo and branch-aware grouping | No | Yes |
+| Collapsed Codex agent hierarchy and storage totals | No | Yes |
 | Rename and reset session aliases | Rare | Yes |
 | Delete from the picker | Varies | Yes |
 

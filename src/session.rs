@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Local, TimeZone, Utc};
 use rusqlite::Connection;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -43,6 +43,12 @@ pub struct SessionRecord {
     pub slug: String,
     pub storage_bytes: u64,
     pub storage_size_is_estimate: bool,
+    pub is_agent: bool,
+    pub root_session_id: String,
+    pub parent_session_id: String,
+    pub agent_depth: usize,
+    pub agent_path: String,
+    pub agent_nickname: String,
 }
 
 #[derive(Clone, Debug)]
@@ -198,6 +204,7 @@ fn new_session_record(
             .unwrap_or(0)
     };
 
+    let root_session_id = session_id.clone();
     SessionRecord {
         provider,
         provider_label: provider.display_name().to_string(),
@@ -233,7 +240,35 @@ fn new_session_record(
         slug,
         storage_bytes,
         storage_size_is_estimate: provider == ProviderKind::Opencode,
+        is_agent: false,
+        root_session_id,
+        parent_session_id: String::new(),
+        agent_depth: 0,
+        agent_path: String::new(),
+        agent_nickname: String::new(),
     }
+}
+
+fn apply_codex_lineage(session: &mut SessionRecord, meta: &Value) {
+    let spawn = obj(meta, "source")
+        .and_then(|source| obj(source, "subagent"))
+        .and_then(|subagent| obj(subagent, "thread_spawn"));
+    let Some(spawn) = spawn else {
+        return;
+    };
+
+    session.is_agent = true;
+    session.root_session_id = strv(meta, "session_id");
+    if session.root_session_id.is_empty() {
+        session.root_session_id = session.session_id.clone();
+    }
+    session.parent_session_id = strv(spawn, "parent_thread_id");
+    session.agent_depth = obj(spawn, "depth")
+        .and_then(Value::as_u64)
+        .and_then(|depth| usize::try_from(depth).ok())
+        .unwrap_or(1);
+    session.agent_path = strv(spawn, "agent_path");
+    session.agent_nickname = strv(spawn, "agent_nickname");
 }
 
 fn read_codex_session_file(
@@ -291,7 +326,7 @@ fn read_codex_session_file(
         preview = fallback_preview;
     }
 
-    Ok(Some(new_session_record(
+    let mut session = new_session_record(
         ProviderKind::Codex,
         session_id.clone(),
         timestamp,
@@ -305,7 +340,9 @@ fn read_codex_session_file(
         String::new(),
         String::new(),
         git_cache,
-    )))
+    );
+    apply_codex_lineage(&mut session, &meta);
+    Ok(Some(session))
 }
 
 fn claude_history_path() -> PathBuf {
@@ -684,12 +721,32 @@ pub fn load_sessions(provider: ProviderKind, index: &AliasIndex) -> Result<Vec<S
 }
 
 pub fn display_sessions(sessions: &[SessionRecord]) -> Vec<DisplaySession> {
+    let root_group_keys = sessions
+        .iter()
+        .filter(|session| !session.is_agent)
+        .map(|session| {
+            let key = if session.workspace_key.trim().is_empty() {
+                session.project_key.clone()
+            } else {
+                session.workspace_key.clone()
+            };
+            ((session.provider, session.session_id.clone()), key)
+        })
+        .collect::<HashMap<_, _>>();
     let mut grouped = HashMap::<(ProviderKind, String), Vec<SessionRecord>>::new();
     for session in sessions {
-        let key = if session.workspace_key.trim().is_empty() {
+        let own_key = if session.workspace_key.trim().is_empty() {
             session.project_key.clone()
         } else {
             session.workspace_key.clone()
+        };
+        let key = if session.is_agent {
+            root_group_keys
+                .get(&(session.provider, session.root_session_id.clone()))
+                .cloned()
+                .unwrap_or(own_key)
+        } else {
+            own_key
         };
         grouped
             .entry((session.provider, key))
@@ -716,11 +773,19 @@ pub fn display_sessions(sessions: &[SessionRecord]) -> Vec<DisplaySession> {
     ordered_projects.sort_by(|left, right| right.2.cmp(&left.2).then_with(|| left.3.cmp(&right.3)));
 
     let mut display = Vec::new();
+    let mut conversation_number = 0;
     for (_, group_key, _, _, items) in ordered_projects {
         for session in items {
+            if !session.is_agent {
+                conversation_number += 1;
+            }
             display.push(DisplaySession {
                 group_key: group_key.clone(),
-                display_number: display.len() + 1,
+                display_number: if session.is_agent {
+                    0
+                } else {
+                    conversation_number
+                },
                 session,
             });
         }
@@ -738,7 +803,9 @@ pub fn filter_display_sessions(sessions: &[SessionRecord], query: &str) -> Vec<D
     if normalized.chars().all(|ch| ch.is_ascii_digit()) {
         return display
             .into_iter()
-            .filter(|entry| entry.display_number.to_string().starts_with(normalized))
+            .filter(|entry| {
+                !entry.session.is_agent && entry.display_number.to_string().starts_with(normalized)
+            })
             .collect();
     }
 
@@ -766,37 +833,89 @@ pub fn filter_display_sessions(sessions: &[SessionRecord], query: &str) -> Vec<D
         return display;
     }
 
-    display
-        .into_iter()
+    let matched_ids = display
+        .iter()
         .filter(|entry| match mode {
-            "title" => entry
-                .session
-                .display_title
-                .to_ascii_lowercase()
-                .contains(&needle),
-            "repo" => entry
-                .session
-                .repo_name
-                .to_ascii_lowercase()
-                .contains(&needle),
-            "branch" => entry
-                .session
-                .branch_display
-                .to_ascii_lowercase()
-                .contains(&needle),
-            _ => {
+            "title" => {
                 entry
                     .session
-                    .project_name
+                    .display_title
                     .to_ascii_lowercase()
                     .contains(&needle)
                     || entry
+                        .session
+                        .agent_nickname
+                        .to_ascii_lowercase()
+                        .contains(&needle)
+                    || entry
+                        .session
+                        .agent_path
+                        .to_ascii_lowercase()
+                        .contains(&needle)
+            }
+            "repo" => {
+                !entry.session.is_agent
+                    && entry
                         .session
                         .repo_name
                         .to_ascii_lowercase()
                         .contains(&needle)
             }
+            "branch" => {
+                !entry.session.is_agent
+                    && entry
+                        .session
+                        .branch_display
+                        .to_ascii_lowercase()
+                        .contains(&needle)
+            }
+            _ => {
+                if entry.session.is_agent {
+                    entry
+                        .session
+                        .agent_nickname
+                        .to_ascii_lowercase()
+                        .contains(&needle)
+                        || entry
+                            .session
+                            .agent_path
+                            .to_ascii_lowercase()
+                            .contains(&needle)
+                } else {
+                    entry
+                        .session
+                        .project_name
+                        .to_ascii_lowercase()
+                        .contains(&needle)
+                        || entry
+                            .session
+                            .repo_name
+                            .to_ascii_lowercase()
+                            .contains(&needle)
+                }
+            }
         })
+        .map(|entry| entry.session.session_id.clone())
+        .collect::<HashSet<_>>();
+
+    let mut included_ids = matched_ids.clone();
+    for entry in &display {
+        if entry.session.is_agent && matched_ids.contains(&entry.session.session_id) {
+            included_ids.insert(entry.session.root_session_id.clone());
+            let mut parent_id = entry.session.parent_session_id.clone();
+            while !parent_id.is_empty() && included_ids.insert(parent_id.clone()) {
+                parent_id = display
+                    .iter()
+                    .find(|candidate| candidate.session.session_id == parent_id)
+                    .map(|candidate| candidate.session.parent_session_id.clone())
+                    .unwrap_or_default();
+            }
+        }
+    }
+
+    display
+        .into_iter()
+        .filter(|entry| included_ids.contains(&entry.session.session_id))
         .collect()
 }
 
@@ -871,7 +990,40 @@ mod tests {
             slug: String::new(),
             storage_bytes: 2048,
             storage_size_is_estimate: false,
+            is_agent: false,
+            root_session_id: format!("session-{number}"),
+            parent_session_id: String::new(),
+            agent_depth: 0,
+            agent_path: String::new(),
+            agent_nickname: String::new(),
         }
+    }
+
+    #[test]
+    fn reads_codex_subagent_lineage() {
+        let mut session = sample_session("alpha", 1);
+        let meta = serde_json::json!({
+            "session_id": "root-123",
+            "source": {
+                "subagent": {
+                    "thread_spawn": {
+                        "parent_thread_id": "parent-456",
+                        "depth": 2,
+                        "agent_path": "/root/review/security",
+                        "agent_nickname": "Halley"
+                    }
+                }
+            }
+        });
+
+        apply_codex_lineage(&mut session, &meta);
+
+        assert!(session.is_agent);
+        assert_eq!(session.root_session_id, "root-123");
+        assert_eq!(session.parent_session_id, "parent-456");
+        assert_eq!(session.agent_depth, 2);
+        assert_eq!(session.agent_path, "/root/review/security");
+        assert_eq!(session.agent_nickname, "Halley");
     }
 
     #[test]
@@ -880,6 +1032,63 @@ mod tests {
         let filtered = filter_display_sessions(&sessions, "title:title 2");
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].session.project_name, "beta");
+    }
+
+    #[test]
+    fn agents_share_the_root_group_without_using_chat_numbers() {
+        let root = sample_session("alpha", 1);
+        let mut agent = sample_session("other-worktree", 2);
+        agent.is_agent = true;
+        agent.root_session_id = root.session_id.clone();
+        agent.parent_session_id = root.session_id.clone();
+        agent.agent_depth = 1;
+
+        let display = display_sessions(&[root, agent]);
+        let root = display
+            .iter()
+            .find(|entry| !entry.session.is_agent)
+            .unwrap();
+        let agent = display.iter().find(|entry| entry.session.is_agent).unwrap();
+        assert_eq!(root.group_key, agent.group_key);
+        assert_eq!(root.display_number, 1);
+        assert_eq!(agent.display_number, 0);
+    }
+
+    #[test]
+    fn agent_search_keeps_its_chat_and_ancestors_in_context() {
+        let root = sample_session("narravita", 1);
+        let mut parent = sample_session("narravita", 2);
+        parent.is_agent = true;
+        parent.root_session_id = root.session_id.clone();
+        parent.parent_session_id = root.session_id.clone();
+        parent.agent_path = "/root/release".to_string();
+        parent.agent_nickname = "Ptolemy".to_string();
+        let mut child = sample_session("narravita", 3);
+        child.is_agent = true;
+        child.root_session_id = root.session_id.clone();
+        child.parent_session_id = parent.session_id.clone();
+        child.agent_depth = 2;
+        child.agent_path = "/root/release/server".to_string();
+        child.agent_nickname = "Anscombe".to_string();
+
+        let sessions = vec![root, parent, child];
+        let project_match = filter_display_sessions(&sessions, "narravita");
+        assert_eq!(project_match.len(), 1);
+        assert!(!project_match[0].session.is_agent);
+
+        let agent_match = filter_display_sessions(&sessions, "anscombe");
+        assert_eq!(agent_match.len(), 3);
+        assert!(
+            agent_match
+                .iter()
+                .any(|entry| entry.session.agent_nickname == "Anscombe")
+        );
+        assert!(
+            agent_match
+                .iter()
+                .any(|entry| entry.session.agent_nickname == "Ptolemy")
+        );
+        assert!(agent_match.iter().any(|entry| !entry.session.is_agent));
     }
 
     #[test]

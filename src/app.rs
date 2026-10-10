@@ -11,6 +11,7 @@ use crate::shell::{
     uninstall_posix_shell_integration, uninstall_powershell_shell_integration,
 };
 use anyhow::{Context, Result, anyhow};
+use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::io::{self, Write};
@@ -271,6 +272,71 @@ fn interactive_delete(
     index.save(provider)
 }
 
+fn with_connected_agents<'a>(
+    display: &'a [crate::session::DisplaySession],
+    selected: &[&'a crate::session::DisplaySession],
+) -> Vec<&'a crate::session::DisplaySession> {
+    let mut ids = BTreeSet::new();
+    for entry in selected {
+        ids.insert(entry.session.session_id.clone());
+        if !entry.session.is_agent {
+            ids.extend(
+                display
+                    .iter()
+                    .filter(|candidate| {
+                        candidate.session.is_agent
+                            && candidate.session.root_session_id == entry.session.session_id
+                    })
+                    .map(|candidate| candidate.session.session_id.clone()),
+            );
+        }
+    }
+    display
+        .iter()
+        .filter(|entry| ids.contains(&entry.session.session_id))
+        .collect()
+}
+
+fn connected_chat<'a>(
+    display: &'a [crate::session::DisplaySession],
+    selected: &'a crate::session::DisplaySession,
+) -> &'a crate::session::DisplaySession {
+    if selected.session.is_agent {
+        display
+            .iter()
+            .find(|entry| {
+                !entry.session.is_agent
+                    && entry.session.session_id == selected.session.root_session_id
+            })
+            .unwrap_or(selected)
+    } else {
+        selected
+    }
+}
+
+fn toggle_agents(
+    selected: &[&crate::session::DisplaySession],
+    expanded_roots: &mut BTreeSet<String>,
+) {
+    let roots = selected
+        .iter()
+        .map(|entry| {
+            if entry.session.is_agent {
+                entry.session.root_session_id.clone()
+            } else {
+                entry.session.session_id.clone()
+            }
+        })
+        .collect::<BTreeSet<_>>();
+    if roots.iter().all(|root| expanded_roots.contains(root)) {
+        for root in roots {
+            expanded_roots.remove(&root);
+        }
+    } else {
+        expanded_roots.extend(roots);
+    }
+}
+
 fn interactive_rename(
     provider: ProviderKind,
     selected: &crate::session::DisplaySession,
@@ -307,15 +373,22 @@ fn browse_command(provider: ProviderKind, query: &str) -> Result<()> {
     ensure_fzf()?;
     let exe = current_exe()?;
     let query = query.to_string();
+    let mut expanded_roots = BTreeSet::new();
 
     loop {
         let (_index, sessions) = load_index_and_sessions(provider)?;
         let display = display_sessions(&sessions);
-        let rows = fzf_rows(&filter_display_sessions(&sessions, &query));
+        let filtered = filter_display_sessions(&sessions, &query);
+        let rows = fzf_rows(
+            &filtered,
+            &display,
+            &expanded_roots,
+            !query.trim().is_empty(),
+        );
         if rows.is_empty() {
             return Ok(());
         }
-        let Some(result) = run_fzf(provider, &query, &exe)? else {
+        let Some(result) = run_fzf(provider, &query, &exe, &expanded_roots)? else {
             return Ok(());
         };
         let selected = resolve_selected_sessions(&display, &result.session_ids);
@@ -330,9 +403,13 @@ fn browse_command(provider: ProviderKind, query: &str) -> Result<()> {
                         "Resume only supports one session at a time. Clear multi-select or choose a single row."
                     ));
                 }
-                return resume_session(&selected[0].session);
+                return resume_session(&connected_chat(&display, selected[0]).session);
             }
-            "ctrl-d" => interactive_delete(provider, &selected)?,
+            "ctrl-a" => toggle_agents(&selected, &mut expanded_roots),
+            "ctrl-d" => {
+                let targets = with_connected_agents(&display, &selected);
+                interactive_delete(provider, &targets)?
+            }
             "ctrl-e" => interactive_rename(provider, selected[0])?,
             "ctrl-r" => interactive_reset(provider, selected[0])?,
             _ => return Err(anyhow!("Unsupported browser action: {}", result.action)),
@@ -391,14 +468,18 @@ fn delete_command(provider: ProviderKind, args: &[String]) -> Result<()> {
     }
     let (_index, sessions) = load_index_and_sessions(provider)?;
     let display = display_sessions(&sessions);
-    let targets = args
+    let selected = args
         .iter()
         .map(|value| {
             find_session(&display, value, Some(provider))
-                .map(|entry| entry.session.clone())
                 .ok_or_else(|| anyhow!("No matching session found for {value}"))
         })
         .collect::<Result<Vec<_>>>()?;
+    let target_refs = with_connected_agents(&display, &selected);
+    let targets = target_refs
+        .into_iter()
+        .map(|entry| entry.session.clone())
+        .collect::<Vec<_>>();
     let mut index = AliasIndex::load(provider)?;
     for session in targets {
         match delete_session(provider, &session, &mut index) {
@@ -427,14 +508,49 @@ fn hidden_preview(provider: ProviderKind, args: &[String]) -> Result<()> {
 }
 
 fn hidden_query(provider: ProviderKind, args: &[String]) -> Result<()> {
-    let query = if !args.is_empty() {
-        args.join(" ")
+    let (expanded_roots, query_args) = if args.first().map(String::as_str) == Some("--expanded") {
+        let expanded = args
+            .get(1)
+            .filter(|value| value.as_str() != "-")
+            .map(|value| {
+                value
+                    .split(',')
+                    .filter(|id| !id.is_empty())
+                    .map(ToOwned::to_owned)
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        (expanded, &args[2.min(args.len())..])
+    } else {
+        (BTreeSet::new(), args)
+    };
+    let query = if !query_args.is_empty() {
+        query_args.join(" ")
     } else {
         env::var("FZF_QUERY").unwrap_or_default()
     };
     let (_index, sessions) = load_index_and_sessions(provider)?;
-    for row in fzf_rows(&filter_display_sessions(&sessions, &query)) {
-        println!("{row}");
+    let display = display_sessions(&sessions);
+    let filtered = filter_display_sessions(&sessions, &query);
+    let stdout = io::stdout();
+    let mut output = io::BufWriter::new(stdout.lock());
+    for row in fzf_rows(
+        &filtered,
+        &display,
+        &expanded_roots,
+        !query.trim().is_empty(),
+    ) {
+        if let Err(error) = writeln!(output, "{row}") {
+            if error.kind() == io::ErrorKind::BrokenPipe {
+                return Ok(());
+            }
+            return Err(error.into());
+        }
+    }
+    if let Err(error) = output.flush() {
+        if error.kind() != io::ErrorKind::BrokenPipe {
+            return Err(error.into());
+        }
     }
     Ok(())
 }
@@ -443,15 +559,22 @@ fn hidden_select(provider: ProviderKind, args: &[String]) -> Result<()> {
     ensure_fzf()?;
     let exe = current_exe()?;
     let query = args.join(" ");
+    let mut expanded_roots = BTreeSet::new();
 
     loop {
         let (_index, sessions) = load_index_and_sessions(provider)?;
         let display = display_sessions(&sessions);
-        let rows = fzf_rows(&filter_display_sessions(&sessions, &query));
+        let filtered = filter_display_sessions(&sessions, &query);
+        let rows = fzf_rows(
+            &filtered,
+            &display,
+            &expanded_roots,
+            !query.trim().is_empty(),
+        );
         if rows.is_empty() {
             return Ok(());
         }
-        let Some(result) = run_fzf(provider, &query, &exe)? else {
+        let Some(result) = run_fzf(provider, &query, &exe, &expanded_roots)? else {
             return Ok(());
         };
         let selected = resolve_selected_sessions(&display, &result.session_ids);
@@ -466,13 +589,18 @@ fn hidden_select(provider: ProviderKind, args: &[String]) -> Result<()> {
                         "Resume only supports one session at a time. Clear multi-select or choose a single row."
                     ));
                 }
+                let selected = connected_chat(&display, selected[0]);
                 println!(
                     "{}	{}",
-                    selected[0].session.project_path, selected[0].session.session_id
+                    selected.session.project_path, selected.session.session_id
                 );
                 return Ok(());
             }
-            "ctrl-d" => interactive_delete(provider, &selected)?,
+            "ctrl-a" => toggle_agents(&selected, &mut expanded_roots),
+            "ctrl-d" => {
+                let targets = with_connected_agents(&display, &selected);
+                interactive_delete(provider, &targets)?
+            }
             "ctrl-e" => interactive_rename(provider, selected[0])?,
             "ctrl-r" => interactive_reset(provider, selected[0])?,
             _ => return Err(anyhow!("Unsupported browser action: {}", result.action)),

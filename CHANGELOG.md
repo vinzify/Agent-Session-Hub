@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.9
+
+- Grouped Codex subagent sessions beneath their connected conversations instead of listing them as ordinary chats
+- Added `Ctrl-A` expansion for agent trees, agent names and paths in search, and connected-chat previews
+- Added separate chat, agent, and combined storage totals
+- Made root conversation deletion include its connected agent session files after an explicit combined confirmation
+- Suppressed harmless broken-pipe failures when `fzf` closes a session-list reload early
+
 ## 0.3.8
 
 - Added per-session storage sizes to browser rows and previews, plus combined workspace totals

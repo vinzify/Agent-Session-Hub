@@ -50,17 +50,22 @@ fn storage_size(bytes: u64, is_estimate: bool) -> String {
     )
 }
 
-pub fn fzf_row(entry: &DisplaySession) -> String {
+fn fzf_row_with_labels(
+    entry: &DisplaySession,
+    number: String,
+    workspace: String,
+    title: String,
+) -> String {
     let fields = [
         row_key(entry.session.provider, &entry.session.session_id),
-        entry.display_number.to_string(),
+        number,
         storage_size(
             entry.session.storage_bytes,
             entry.session.storage_size_is_estimate,
         ),
         entry.session.timestamp_text.clone(),
-        compress_text(&entry.session.workspace_label, 28),
-        compress_text(&entry.session.display_title, 90),
+        compress_text(&workspace, 28),
+        compress_text(&title, 90),
         entry.session.project_path.clone(),
         entry.session.preview.clone(),
     ];
@@ -71,7 +76,67 @@ pub fn fzf_row(entry: &DisplaySession) -> String {
         .join("\t")
 }
 
-pub fn fzf_rows(entries: &[DisplaySession]) -> Vec<String> {
+fn agent_title(entry: &DisplaySession) -> String {
+    let identity = if !entry.session.agent_nickname.trim().is_empty() {
+        entry.session.agent_nickname.trim().to_string()
+    } else if !entry.session.agent_path.trim().is_empty() {
+        entry
+            .session
+            .agent_path
+            .trim_start_matches("/root/")
+            .trim_start_matches('/')
+            .to_string()
+    } else {
+        "agent".to_string()
+    };
+    let path = entry
+        .session
+        .agent_path
+        .trim_start_matches("/root/")
+        .trim_start_matches('/');
+    let detail = if path.is_empty() || path == identity {
+        identity
+    } else {
+        format!("{identity} · {path}")
+    };
+    format!(
+        "{}↳ Agent: {detail}",
+        "  ".repeat(entry.session.agent_depth)
+    )
+}
+
+fn push_agent_tree(
+    rows: &mut Vec<String>,
+    items: &[&DisplaySession],
+    parent_id: &str,
+    emitted: &mut BTreeSet<String>,
+) {
+    let mut children = items
+        .iter()
+        .copied()
+        .filter(|item| item.session.is_agent && item.session.parent_session_id == parent_id)
+        .collect::<Vec<_>>();
+    children.sort_by(|left, right| right.session.timestamp.cmp(&left.session.timestamp));
+    for child in children {
+        if !emitted.insert(child.session.session_id.clone()) {
+            continue;
+        }
+        rows.push(fzf_row_with_labels(
+            child,
+            String::new(),
+            String::new(),
+            agent_title(child),
+        ));
+        push_agent_tree(rows, items, &child.session.session_id, emitted);
+    }
+}
+
+pub fn fzf_rows(
+    entries: &[DisplaySession],
+    all_entries: &[DisplaySession],
+    expanded_roots: &BTreeSet<String>,
+    reveal_agents: bool,
+) -> Vec<String> {
     let mut groups = BTreeMap::<(ProviderKind, String), Vec<&DisplaySession>>::new();
     for entry in entries {
         groups
@@ -82,27 +147,48 @@ pub fn fzf_rows(entries: &[DisplaySession]) -> Vec<String> {
 
     let mut rows = Vec::new();
     for ((provider, group_key), items) in groups {
-        let workspace_label = items
-            .first()
+        let all_items = all_entries
+            .iter()
+            .filter(|item| item.session.provider == provider && item.group_key == group_key)
+            .collect::<Vec<_>>();
+        let representative = all_items
+            .iter()
+            .copied()
+            .find(|item| !item.session.is_agent)
+            .or_else(|| all_items.first().copied())
+            .or_else(|| items.first().copied());
+        let workspace_label = representative
             .map(|item| item.session.workspace_label.clone())
             .unwrap_or_default();
-        let project_path = items
-            .first()
+        let project_path = representative
             .map(|item| item.session.project_path.clone())
             .unwrap_or_default();
-        let total_bytes = items
+        let total_bytes = all_items
             .iter()
             .map(|item| item.session.storage_bytes)
             .sum::<u64>();
-        let size_is_estimate = items
+        let size_is_estimate = all_items
             .iter()
             .any(|item| item.session.storage_size_is_estimate);
+        let conversation_count = all_items
+            .iter()
+            .filter(|item| !item.session.is_agent)
+            .count();
+        let agent_count = all_items
+            .iter()
+            .filter(|item| item.session.is_agent)
+            .count();
+        let count_label = if agent_count > 0 {
+            format!("{conversation_count} chats · {agent_count} agents")
+        } else {
+            format!("{conversation_count} chats")
+        };
         let header = [
             workspace_row_key(provider, &group_key),
             String::new(),
             storage_size(total_bytes, size_is_estimate),
             String::new(),
-            format!("[{}] {workspace_label}", items.len()),
+            format!("[{count_label}] {workspace_label}"),
             compress_text(&project_path, 100),
             project_path,
             String::new(),
@@ -114,8 +200,112 @@ pub fn fzf_rows(entries: &[DisplaySession]) -> Vec<String> {
                 .collect::<Vec<_>>()
                 .join("\t"),
         );
-        for item in items {
-            rows.push(fzf_row(item));
+        let mut roots = items
+            .iter()
+            .copied()
+            .filter(|item| !item.session.is_agent)
+            .collect::<Vec<_>>();
+        roots.sort_by(|left, right| right.session.timestamp.cmp(&left.session.timestamp));
+        let mut emitted = BTreeSet::new();
+        for item in roots {
+            let agents = all_items
+                .iter()
+                .copied()
+                .filter(|candidate| {
+                    candidate.session.is_agent
+                        && candidate.session.root_session_id == item.session.session_id
+                })
+                .collect::<Vec<_>>();
+            let agent_bytes = agents
+                .iter()
+                .map(|agent| agent.session.storage_bytes)
+                .sum::<u64>();
+            let has_filtered_agents = items.iter().any(|candidate| {
+                candidate.session.is_agent
+                    && candidate.session.root_session_id == item.session.session_id
+            });
+            let explicitly_expanded = expanded_roots.contains(&item.session.session_id);
+            let expanded = explicitly_expanded || (reveal_agents && has_filtered_agents);
+            let filtered_agent_count = items
+                .iter()
+                .filter(|candidate| {
+                    candidate.session.is_agent
+                        && candidate.session.root_session_id == item.session.session_id
+                })
+                .count();
+            let agent_count_label =
+                if expanded && !explicitly_expanded && filtered_agent_count < agents.len() {
+                    format!("{filtered_agent_count}/{}", agents.len())
+                } else {
+                    agents.len().to_string()
+                };
+            let title = if agents.is_empty() {
+                item.session.display_title.clone()
+            } else {
+                format!(
+                    "{} {} agents · {}  │  {}",
+                    if expanded { "▼" } else { "▶" },
+                    agent_count_label,
+                    storage_size(
+                        agent_bytes,
+                        agents
+                            .iter()
+                            .any(|agent| agent.session.storage_size_is_estimate)
+                    ),
+                    item.session.display_title,
+                )
+            };
+            rows.push(fzf_row_with_labels(
+                item,
+                item.display_number.to_string(),
+                item.session.workspace_label.clone(),
+                title,
+            ));
+            emitted.insert(item.session.session_id.clone());
+            if expanded {
+                let visible_agents = if explicitly_expanded {
+                    &all_items
+                } else {
+                    &items
+                };
+                push_agent_tree(
+                    &mut rows,
+                    visible_agents,
+                    &item.session.session_id,
+                    &mut emitted,
+                );
+                for agent in visible_agents.iter().filter(|candidate| {
+                    candidate.session.is_agent
+                        && candidate.session.root_session_id == item.session.session_id
+                }) {
+                    if emitted.insert(agent.session.session_id.clone()) {
+                        rows.push(fzf_row_with_labels(
+                            agent,
+                            String::new(),
+                            String::new(),
+                            agent_title(agent),
+                        ));
+                    }
+                }
+            }
+        }
+        let known_roots = all_items
+            .iter()
+            .filter(|item| !item.session.is_agent)
+            .map(|item| item.session.session_id.as_str())
+            .collect::<BTreeSet<_>>();
+        // Keep orphaned agent sessions accessible even when their root file is gone.
+        for item in items.iter().filter(|item| {
+            item.session.is_agent && !known_roots.contains(item.session.root_session_id.as_str())
+        }) {
+            if emitted.insert(item.session.session_id.clone()) {
+                rows.push(fzf_row_with_labels(
+                    item,
+                    String::new(),
+                    item.session.workspace_label.clone(),
+                    format!("[orphan] {}", agent_title(item)),
+                ));
+            }
         }
     }
     rows
@@ -136,7 +326,10 @@ fn parse_fzf_output(stdout: &str) -> Option<BrowserResult> {
     let mut selected_rows = lines.split_off(1);
     if selected_rows.is_empty()
         && lines.len() == 1
-        && !matches!(action.as_str(), "enter" | "ctrl-d" | "ctrl-e" | "ctrl-r")
+        && !matches!(
+            action.as_str(),
+            "enter" | "ctrl-a" | "ctrl-d" | "ctrl-e" | "ctrl-r"
+        )
     {
         action = "enter".to_string();
         selected_rows = lines;
@@ -154,9 +347,9 @@ fn parse_fzf_output(stdout: &str) -> Option<BrowserResult> {
 
 pub fn browser_header(provider: ProviderKind) -> String {
     let keys_line = if provider.supports_delete() {
-        "Keys: Enter open | Tab mark | Ctrl-E rename | Ctrl-R reset | Ctrl-D delete(confirm)"
+        "Keys: Enter open | Ctrl-A agents | Tab mark | Ctrl-E rename | Ctrl-R reset | Ctrl-D delete(confirm)"
     } else {
-        "Keys: Enter open | Tab mark | Ctrl-E rename | Ctrl-R reset"
+        "Keys: Enter open | Ctrl-A agents | Tab mark | Ctrl-E rename | Ctrl-R reset"
     };
     format!("Find: text folder/repo | # number | title:term | repo:term | branch:term\n{keys_line}")
 }
@@ -165,8 +358,15 @@ pub fn run_fzf(
     provider: ProviderKind,
     initial_query: &str,
     exe: &std::path::Path,
+    expanded_roots: &BTreeSet<String>,
 ) -> Result<Option<BrowserResult>> {
-    run_fzf_with_program(provider, initial_query, exe, std::path::Path::new("fzf"))
+    run_fzf_with_program(
+        provider,
+        initial_query,
+        exe,
+        std::path::Path::new("fzf"),
+        expanded_roots,
+    )
 }
 
 fn run_fzf_with_program(
@@ -174,8 +374,15 @@ fn run_fzf_with_program(
     initial_query: &str,
     exe: &std::path::Path,
     fzf_program: &std::path::Path,
+    expanded_roots: &BTreeSet<String>,
 ) -> Result<Option<BrowserResult>> {
     let provider_flag = format!("--provider {}", provider.name());
+    let expanded = if expanded_roots.is_empty() {
+        "-".to_string()
+    } else {
+        expanded_roots.iter().cloned().collect::<Vec<_>>().join(",")
+    };
+    let query_command = format!("{provider_flag} __query --expanded {expanded}");
     let mut args = vec![
         "--ansi".to_string(),
         "--multi".to_string(),
@@ -195,15 +402,15 @@ fn run_fzf_with_program(
         "right:40%:wrap".to_string(),
         "--expect".to_string(),
         if provider.supports_delete() {
-            "enter,ctrl-e,ctrl-r,ctrl-d".to_string()
+            "enter,ctrl-a,ctrl-e,ctrl-r,ctrl-d".to_string()
         } else {
-            "enter,ctrl-e,ctrl-r".to_string()
+            "enter,ctrl-a,ctrl-e,ctrl-r".to_string()
         },
         "--bind".to_string(),
         format!(
             "start:reload-sync({}),change:reload-sync({})+first",
-            fzf_shell_command(exe, &format!("{provider_flag} __query")),
-            fzf_shell_command(exe, &format!("{provider_flag} __query {{q}}"))
+            fzf_shell_command(exe, &query_command),
+            fzf_shell_command(exe, &format!("{query_command} {{q}}"))
         ),
         "--header".to_string(),
         browser_header(provider),
@@ -233,23 +440,74 @@ fn run_fzf_with_program(
     Ok(parse_fzf_output(&stdout))
 }
 
-pub fn session_preview(session: &DisplaySession, project_session_count: usize) -> String {
-    let project_count_text = if project_session_count > 0 {
-        format!("{project_session_count} sessions")
+pub fn session_preview(session: &DisplaySession, project_sessions: &[&DisplaySession]) -> String {
+    let conversation_count = project_sessions
+        .iter()
+        .filter(|entry| !entry.session.is_agent)
+        .count();
+    let project_count_text = if conversation_count > 0 {
+        format!("{conversation_count} conversations")
     } else {
         String::new()
     };
+    let related_agents = project_sessions
+        .iter()
+        .copied()
+        .filter(|entry| {
+            entry.session.is_agent
+                && entry.session.root_session_id == session.session.root_session_id
+        })
+        .collect::<Vec<_>>();
+    let agent_bytes = related_agents
+        .iter()
+        .map(|entry| entry.session.storage_bytes)
+        .sum::<u64>();
+    let connected_root = if session.session.is_agent {
+        project_sessions.iter().copied().find(|entry| {
+            !entry.session.is_agent && entry.session.session_id == session.session.root_session_id
+        })
+    } else {
+        None
+    };
+    let heading = if session.session.is_agent {
+        format!(
+            "Agent {}",
+            if session.session.agent_nickname.is_empty() {
+                session.session.session_id.as_str()
+            } else {
+                session.session.agent_nickname.as_str()
+            }
+        )
+    } else {
+        format!(
+            "#{} {}",
+            session.display_number, session.session.workspace_label
+        )
+    };
 
-    [
-        ascii_banner(
-            "session",
-            &format!(
-                "#{} {}",
-                session.display_number, session.session.workspace_label
-            ),
-            &session.session.last_updated_age,
-        ),
+    let mut lines = vec![
+        ascii_banner("session", &heading, &session.session.last_updated_age),
         format!("Provider: {}", session.session.provider_label),
+    ];
+    if session.session.is_agent {
+        lines.extend([
+            format!("Agent:    {}", session.session.agent_nickname),
+            format!("Path:     {}", session.session.agent_path),
+            format!("Depth:    {}", session.session.agent_depth),
+            format!("Parent:   {}", session.session.parent_session_id),
+            format!("Root:     {}", session.session.root_session_id),
+            connected_root
+                .map(|root| {
+                    format!(
+                        "Chat:     #{} {}",
+                        root.display_number, root.session.display_title
+                    )
+                })
+                .unwrap_or_else(|| "Chat:     <root session missing>".to_string()),
+            "Open:     Enter resumes the connected chat".to_string(),
+        ]);
+    }
+    lines.extend([
         format!("Title:    {}", session.session.display_title),
         format!(
             "Size:     {}",
@@ -258,6 +516,34 @@ pub fn session_preview(session: &DisplaySession, project_session_count: usize) -
                 session.session.storage_size_is_estimate
             )
         ),
+        if !session.session.is_agent && !related_agents.is_empty() {
+            format!(
+                "Agents:   {} ({})",
+                related_agents.len(),
+                storage_size(
+                    agent_bytes,
+                    related_agents
+                        .iter()
+                        .any(|entry| entry.session.storage_size_is_estimate)
+                )
+            )
+        } else {
+            String::new()
+        },
+        if !session.session.is_agent && !related_agents.is_empty() {
+            format!(
+                "Total:    {}",
+                storage_size(
+                    session.session.storage_bytes + agent_bytes,
+                    session.session.storage_size_is_estimate
+                        || related_agents
+                            .iter()
+                            .any(|entry| entry.session.storage_size_is_estimate)
+                )
+            )
+        } else {
+            String::new()
+        },
         format!("Project:  {}", session.session.project_path),
         if session.session.repo_root.is_empty() {
             String::new()
@@ -289,17 +575,28 @@ pub fn session_preview(session: &DisplaySession, project_session_count: usize) -
         } else {
             session.session.preview.clone()
         },
-    ]
-    .into_iter()
-    .filter(|line| !line.is_empty())
-    .collect::<Vec<_>>()
-    .join("\n")
+    ]);
+    lines
+        .into_iter()
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub fn workspace_preview(project_sessions: &[&DisplaySession]) -> String {
-    let latest = project_sessions[0];
+    let representative = project_sessions
+        .iter()
+        .copied()
+        .find(|entry| !entry.session.is_agent)
+        .unwrap_or(project_sessions[0]);
+    let latest = project_sessions
+        .iter()
+        .copied()
+        .max_by_key(|entry| entry.session.last_updated)
+        .unwrap_or(representative);
     let session_numbers = project_sessions
         .iter()
+        .filter(|entry| !entry.session.is_agent)
         .map(|entry| entry.display_number)
         .collect::<Vec<_>>();
     let range_text = if session_numbers.is_empty() {
@@ -336,24 +633,34 @@ pub fn workspace_preview(project_sessions: &[&DisplaySession]) -> String {
         .iter()
         .any(|entry| entry.session.storage_size_is_estimate);
 
+    let conversation_count = project_sessions
+        .iter()
+        .filter(|entry| !entry.session.is_agent)
+        .count();
+    let agent_count = project_sessions.len() - conversation_count;
+    let count_text = if agent_count > 0 {
+        format!("{conversation_count} chats · {agent_count} agents")
+    } else {
+        format!("{conversation_count} chats")
+    };
     let mut lines = vec![
         ascii_banner(
             "workspace",
-            &latest.session.workspace_label,
-            &format!("{} sessions", project_sessions.len()),
+            &representative.session.workspace_label,
+            &count_text,
         ),
-        format!("Provider: {}", latest.session.provider_label),
+        format!("Provider: {}", representative.session.provider_label),
         format!("Size:     {}", storage_size(total_bytes, size_is_estimate)),
-        format!("Path:     {}", latest.session.project_path),
+        format!("Path:     {}", representative.session.project_path),
     ];
-    if !latest.session.repo_root.is_empty() {
-        lines.push(format!("Repo:     {}", latest.session.repo_root));
+    if !representative.session.repo_root.is_empty() {
+        lines.push(format!("Repo:     {}", representative.session.repo_root));
     }
     if !branch_summary.is_empty() {
         lines.push(format!("Branch:   {branch_summary}"));
     }
     lines.extend([
-        format!("Exists:   {}", latest.session.project_exists),
+        format!("Exists:   {}", representative.session.project_exists),
         format!(
             "Latest:   {} ({})",
             latest.session.last_updated_age, latest.session.last_updated_text
@@ -364,7 +671,11 @@ pub fn workspace_preview(project_sessions: &[&DisplaySession]) -> String {
         "Recent".to_string(),
         "------".to_string(),
     ]);
-    for entry in project_sessions.iter().take(3) {
+    for entry in project_sessions
+        .iter()
+        .filter(|entry| !entry.session.is_agent)
+        .take(3)
+    {
         lines.push(format!(
             "  {:<7} {:>9}  {}",
             entry.session.last_updated_age,
@@ -385,6 +696,16 @@ pub fn write_preview(
     workspace_key: &str,
     project_path: &str,
 ) -> Result<()> {
+    fn emit_preview(text: &str) -> Result<()> {
+        let stdout = io::stdout();
+        let mut output = stdout.lock();
+        match writeln!(output, "{text}") {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     let mut project_sessions = Vec::new();
     if !workspace_key.trim().is_empty() {
         project_sessions = display_sessions
@@ -413,21 +734,17 @@ pub fn write_preview(
                     })
                     .collect::<Vec<_>>();
             }
-            println!("{}", session_preview(session, project_sessions.len()));
-            return Ok(());
+            return emit_preview(&session_preview(session, &project_sessions));
         }
     }
 
     if workspace_key.trim().is_empty() && project_path.trim().is_empty() {
-        println!();
-        return Ok(());
+        return emit_preview("");
     }
     if project_sessions.is_empty() {
-        println!();
-        return Ok(());
+        return emit_preview("");
     }
-    println!("{}", workspace_preview(&project_sessions));
-    Ok(())
+    emit_preview(&workspace_preview(&project_sessions))
 }
 
 pub fn parse_row_target(raw: &str) -> (String, String, String) {
@@ -461,6 +778,8 @@ pub fn parse_row_target(raw: &str) -> (String, String, String) {
 }
 
 pub fn confirm_delete(sessions: &[SessionRecord]) -> Result<bool> {
+    let agent_count = sessions.iter().filter(|session| session.is_agent).count();
+    let conversation_count = sessions.len() - agent_count;
     let workspace_labels = sessions
         .iter()
         .map(|session| session.workspace_label.clone())
@@ -474,16 +793,25 @@ pub fn confirm_delete(sessions: &[SessionRecord]) -> Result<bool> {
         format!("{} sessions", sessions.len())
     };
 
-    eprintln!(
-        "Delete {} session{}",
-        sessions.len(),
-        if sessions.len() == 1 { "" } else { "s" }
-    );
+    if agent_count > 0 {
+        eprintln!(
+            "Delete {conversation_count} conversation{} and {agent_count} connected agent session{}",
+            if conversation_count == 1 { "" } else { "s" },
+            if agent_count == 1 { "" } else { "s" }
+        );
+    } else {
+        eprintln!(
+            "Delete {} session{}",
+            sessions.len(),
+            if sessions.len() == 1 { "" } else { "s" }
+        );
+    }
     eprintln!("Workspace: {workspace_text}");
     eprintln!("Targets:");
     for session in sessions.iter().take(2) {
         eprintln!(
-            "  - #{} {}",
+            "  - {}{} {}",
+            if session.is_agent { "agent " } else { "chat " },
             session.session_id,
             compress_text(&session.display_title, 72)
         );
@@ -559,6 +887,7 @@ mod tests {
         storage_size,
     };
     use crate::provider::ProviderKind;
+    use std::collections::BTreeSet;
     #[cfg(unix)]
     use std::fs;
     #[cfg(unix)]
@@ -639,6 +968,7 @@ S:codex:abc123
             "",
             Path::new("/tmp/agent-session-hub"),
             &fake_fzf,
+            &BTreeSet::new(),
         )
         .unwrap()
         .unwrap();
