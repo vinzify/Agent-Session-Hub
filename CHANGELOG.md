@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.11
+
+- Added an incremental metadata cache for Codex and Claude histories, avoiding repeated parsing of unchanged session logs during search and preview
+- Refreshed aliases, project existence, relative ages, and Git state independently of cached metadata; invalidated changed logs and pruned deleted entries automatically
+- Ordered workspaces and conversations by last activity and showed last-updated dates in picker rows
+- Fixed cleanup and help command routing in bash, zsh, fish, PowerShell, and Windows cmd shell integration
+- Fixed Unicode title truncation, unnecessary provider prompts for explicit `sessionhub` commands, and quoted executable paths containing apostrophes
+- Rechecked cleanup eligibility after confirmation and rejected out-of-range retention ages
+- Improved scan-run identification and respected custom Claude roots when reading history
+- Redesigned the public README with real terminal captures, provider capabilities, search examples, and cleanup guidance
+
 ## 0.3.10
 
 - Collapsed generated Codex Security sessions into one expandable row per scan run

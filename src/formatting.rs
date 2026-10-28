@@ -6,13 +6,14 @@ pub fn compress_text(text: &str, max_length: usize) -> String {
     if clean.is_empty() {
         return String::new();
     }
-    if clean.len() <= max_length {
+    if clean.chars().count() <= max_length {
         return clean;
     }
     if max_length <= 3 {
         return ".".repeat(max_length);
     }
-    format!("{}...", &clean[..max_length - 3])
+    let prefix = clean.chars().take(max_length - 3).collect::<String>();
+    format!("{prefix}...")
 }
 
 pub fn project_name(project_path: &str) -> String {
@@ -29,6 +30,10 @@ pub fn project_name(project_path: &str) -> String {
 
 pub fn format_timestamp(timestamp: DateTime<Local>) -> String {
     timestamp.format("%Y-%m-%d %H:%M").to_string()
+}
+
+pub fn format_count(count: usize, noun: &str) -> String {
+    format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
 }
 
 pub fn format_relative_age(timestamp: DateTime<Local>) -> String {
@@ -101,7 +106,14 @@ pub fn escape_sh_single_quotes(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::format_bytes;
+    use super::{compress_text, format_bytes};
+
+    #[test]
+    fn truncates_multilingual_titles_without_splitting_utf8() {
+        assert_eq!(compress_text("修复登录问题和测试", 7), "修复登录...");
+        assert_eq!(compress_text("ship 🚀 release", 10), "ship 🚀 ...");
+        assert_eq!(compress_text("café", 4), "café");
+    }
 
     #[test]
     fn formats_storage_sizes_compactly() {

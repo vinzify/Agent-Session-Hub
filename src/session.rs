@@ -1,3 +1,4 @@
+use crate::cache::SessionCache;
 use crate::config::AliasIndex;
 use crate::formatting::{compress_text, format_relative_age, format_timestamp, project_name};
 use crate::git::{GitContext, apply_recorded_branch, get_git_context, workspace_label};
@@ -6,6 +7,7 @@ use crate::provider::ProviderKind;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local, TimeZone, Utc};
 use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
@@ -58,6 +60,52 @@ pub struct DisplaySession {
     pub group_key: String,
 }
 
+// Only parser results are cached. Aliases, ages, project existence and Git state
+// are rebuilt on every load so the cache cannot freeze those live values.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct SessionMetadata {
+    session_id: String,
+    timestamp: DateTime<Local>,
+    last_updated: DateTime<Local>,
+    project_path: String,
+    preview: String,
+    recorded_branch_name: String,
+    recorded_detached_head: bool,
+    slug: String,
+    codex_lineage: Option<Value>,
+}
+
+impl SessionMetadata {
+    fn into_record(
+        self,
+        provider: ProviderKind,
+        file_path: &Path,
+        index: &AliasIndex,
+        git_cache: &mut HashMap<String, GitContext>,
+    ) -> SessionRecord {
+        let alias = index.get_alias(provider, &self.session_id);
+        let mut session = new_session_record(
+            provider,
+            self.session_id,
+            self.timestamp,
+            self.last_updated,
+            self.project_path,
+            self.preview,
+            alias,
+            file_path.to_path_buf(),
+            self.recorded_branch_name,
+            self.recorded_detached_head,
+            String::new(),
+            self.slug,
+            git_cache,
+        );
+        if let Some(lineage) = self.codex_lineage {
+            apply_codex_lineage(&mut session, &lineage);
+        }
+        session
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SecurityScanIdentity {
     pub key: String,
@@ -76,15 +124,16 @@ pub fn security_scan_identity(project_path: &str) -> Option<SecurityScanIdentity
             .to_ascii_lowercase()
             .starts_with("codex-security-scans-")
     })?;
-    let repository = components.get(scan_index + 1).copied().unwrap_or("unknown");
-    let run = components.get(scan_index + 2).copied().unwrap_or("scan");
+    let repository = *components.get(scan_index + 1)?;
+    let run = *components.get(scan_index + 2)?;
     let prefix = if normalized.starts_with('/') { "/" } else { "" };
-    let root_path = format!(
-        "{prefix}{}",
-        components[..=(scan_index + 2).min(components.len() - 1)].join("/")
-    );
+    let root_path = format!("{prefix}{}", components[..=scan_index + 2].join("/"));
     Some(SecurityScanIdentity {
-        key: root_path.to_ascii_lowercase(),
+        key: if cfg!(windows) {
+            root_path.to_ascii_lowercase()
+        } else {
+            root_path.clone()
+        },
         label: format!("{repository} · {run}"),
         root_path,
     })
@@ -129,17 +178,17 @@ fn strv(value: &Value, key: &str) -> String {
 
 fn codex_preview_candidate(entry: &Value) -> String {
     let entry_type = strv(entry, "type");
-    let payload = obj(entry, "payload").cloned().unwrap_or(Value::Null);
+    let payload = obj(entry, "payload").unwrap_or(&Value::Null);
 
-    if entry_type == "event_msg" && strv(&payload, "type") == "user_message" {
-        return strv(&payload, "message");
+    if entry_type == "event_msg" && strv(payload, "type") == "user_message" {
+        return strv(payload, "message");
     }
 
     if entry_type == "response_item"
-        && strv(&payload, "type") == "message"
-        && strv(&payload, "role") == "user"
+        && strv(payload, "type") == "message"
+        && strv(payload, "role") == "user"
     {
-        if let Some(content) = obj(&payload, "content").and_then(Value::as_array) {
+        if let Some(content) = obj(payload, "content").and_then(Value::as_array) {
             for item in content {
                 if strv(item, "type") == "input_text" {
                     let text = strv(item, "text");
@@ -314,11 +363,7 @@ fn apply_codex_lineage(session: &mut SessionRecord, meta: &Value) {
     session.agent_nickname = strv(spawn, "agent_nickname");
 }
 
-fn read_codex_session_file(
-    file_path: &Path,
-    index: &AliasIndex,
-    git_cache: &mut HashMap<String, GitContext>,
-) -> Result<Option<SessionRecord>> {
+fn read_codex_session_file(file_path: &Path) -> Result<Option<SessionMetadata>> {
     let metadata =
         fs::metadata(file_path).with_context(|| format!("read {}", file_path.display()))?;
     let file = File::open(file_path).with_context(|| format!("open {}", file_path.display()))?;
@@ -369,29 +414,34 @@ fn read_codex_session_file(
         preview = fallback_preview;
     }
 
-    let mut session = new_session_record(
-        ProviderKind::Codex,
-        session_id.clone(),
+    let git = obj(&meta, "git").unwrap_or(&Value::Null);
+    let recorded_branch_name = strv(git, "branch");
+    let lineage = obj(&meta, "source")
+        .and_then(|source| obj(source, "subagent"))
+        .and_then(|subagent| obj(subagent, "thread_spawn"))
+        .map(|spawn| {
+            serde_json::json!({
+                "session_id": strv(&meta, "session_id"),
+                "source": { "subagent": { "thread_spawn": spawn } }
+            })
+        });
+    Ok(Some(SessionMetadata {
+        session_id,
         timestamp,
         last_updated,
-        strv(&meta, "cwd"),
-        preview,
-        index.get_alias(ProviderKind::Codex, &session_id),
-        file_path.to_path_buf(),
-        String::new(),
-        false,
-        String::new(),
-        String::new(),
-        git_cache,
-    );
-    apply_codex_lineage(&mut session, &meta);
-    Ok(Some(session))
+        project_path: strv(&meta, "cwd"),
+        preview: compress_text(&preview, 160),
+        recorded_detached_head: recorded_branch_name == "HEAD",
+        recorded_branch_name,
+        slug: String::new(),
+        codex_lineage: lineage,
+    }))
 }
 
 fn claude_history_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".claude")
+    provider_session_root(ProviderKind::Claude)
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
         .join("history.jsonl")
 }
 
@@ -422,10 +472,8 @@ fn claude_history_index() -> Result<HashMap<String, Value>> {
 
 fn read_claude_session_file(
     file_path: &Path,
-    index: &AliasIndex,
-    git_cache: &mut HashMap<String, GitContext>,
     history_index: &HashMap<String, Value>,
-) -> Result<Option<SessionRecord>> {
+) -> Result<Option<SessionMetadata>> {
     let metadata =
         fs::metadata(file_path).with_context(|| format!("read {}", file_path.display()))?;
     let last_modified = local_from_system_time(&metadata);
@@ -534,21 +582,17 @@ fn read_claude_session_file(
     let timestamp = timestamp.unwrap_or(last_modified);
     let last_updated = last_updated.unwrap_or(last_modified);
 
-    Ok(Some(new_session_record(
-        ProviderKind::Claude,
-        session_id.clone(),
+    Ok(Some(SessionMetadata {
+        session_id,
         timestamp,
         last_updated,
         project_path,
-        preview,
-        index.get_alias(ProviderKind::Claude, &session_id),
-        file_path.to_path_buf(),
+        preview: compress_text(&preview, 160),
         recorded_branch_name,
         recorded_detached_head,
-        String::new(),
         slug,
-        git_cache,
-    )))
+        codex_lineage: None,
+    }))
 }
 
 fn opencode_preview_index(conn: &Connection) -> Result<HashMap<String, String>> {
@@ -694,9 +738,10 @@ fn load_opencode_sessions_from_db(
 
     sessions.sort_by(|left, right| {
         right
-            .timestamp
-            .cmp(&left.timestamp)
+            .last_updated
+            .cmp(&left.last_updated)
             .then_with(|| left.project_path.cmp(&right.project_path))
+            .then_with(|| left.session_id.cmp(&right.session_id))
     });
     Ok(sessions)
 }
@@ -720,21 +765,17 @@ pub fn load_sessions(provider: ProviderKind, index: &AliasIndex) -> Result<Vec<S
         return Ok(Vec::new());
     }
 
-    let mut files = WalkDir::new(&session_root)
+    let files = WalkDir::new(&session_root)
         .into_iter()
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_file())
         .filter(|entry| entry.path().extension().and_then(|value| value.to_str()) == Some("jsonl"))
         .map(|entry| entry.into_path())
         .collect::<Vec<_>>();
-    files.sort_by_key(|path| {
-        fs::metadata(path)
-            .and_then(|metadata| metadata.modified())
-            .ok()
-    });
-    files.reverse();
 
     let mut git_cache = HashMap::new();
+    let history_path = (provider == ProviderKind::Claude).then(claude_history_path);
+    let mut cache = SessionCache::load(provider, &session_root, history_path.as_deref());
     let history = if provider == ProviderKind::Claude {
         claude_history_index()?
     } else {
@@ -742,23 +783,50 @@ pub fn load_sessions(provider: ProviderKind, index: &AliasIndex) -> Result<Vec<S
     };
     let mut sessions = Vec::new();
     for file in files {
-        let session = match provider {
-            ProviderKind::Codex => read_codex_session_file(&file, index, &mut git_cache)?,
-            ProviderKind::Claude => {
-                read_claude_session_file(&file, index, &mut git_cache, &history)?
+        let metadata = match fs::metadata(&file) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        let session = if let Some(cached) = cache.get(&file, &metadata) {
+            cached
+        } else {
+            let parsed = match provider {
+                ProviderKind::Codex => read_codex_session_file(&file),
+                ProviderKind::Claude => read_claude_session_file(&file, &history),
+                ProviderKind::Opencode => Ok(None),
+            };
+            let parsed = match parsed {
+                Ok(parsed) => parsed,
+                Err(error)
+                    if error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            // Never cache a parser result if the file was modified while read.
+            if fs::metadata(&file).is_ok_and(|after| {
+                after.len() == metadata.len() && after.modified().ok() == metadata.modified().ok()
+            }) {
+                cache.insert(&file, &metadata, parsed.clone());
             }
-            ProviderKind::Opencode => None,
+            parsed
         };
         if let Some(session) = session {
-            sessions.push(session);
+            sessions.push(session.into_record(provider, &file, index, &mut git_cache));
         }
     }
+    cache.save();
 
     sessions.sort_by(|left, right| {
         right
-            .timestamp
-            .cmp(&left.timestamp)
+            .last_updated
+            .cmp(&left.last_updated)
             .then_with(|| left.project_path.cmp(&right.project_path))
+            .then_with(|| left.session_id.cmp(&right.session_id))
     });
     Ok(sessions)
 }
@@ -792,10 +860,15 @@ pub fn display_sessions(sessions: &[SessionRecord]) -> Vec<DisplaySession> {
     let mut ordered_projects = grouped
         .into_iter()
         .map(|((provider, group_key), mut items)| {
-            items.sort_by(|left, right| right.timestamp.cmp(&left.timestamp));
+            items.sort_by(|left, right| {
+                right
+                    .last_updated
+                    .cmp(&left.last_updated)
+                    .then_with(|| left.session_id.cmp(&right.session_id))
+            });
             let latest_time = items
                 .first()
-                .map(|item| item.timestamp)
+                .map(|item| item.last_updated)
                 .unwrap_or_else(Local::now);
             let project_path = items
                 .first()
@@ -805,7 +878,13 @@ pub fn display_sessions(sessions: &[SessionRecord]) -> Vec<DisplaySession> {
         })
         .collect::<Vec<_>>();
 
-    ordered_projects.sort_by(|left, right| right.2.cmp(&left.2).then_with(|| left.3.cmp(&right.3)));
+    ordered_projects.sort_by(|left, right| {
+        right
+            .2
+            .cmp(&left.2)
+            .then_with(|| left.3.cmp(&right.3))
+            .then_with(|| left.1.cmp(&right.1))
+    });
 
     let mut display = Vec::new();
     let mut conversation_number = 0;
@@ -1097,6 +1176,8 @@ mod tests {
 
     #[test]
     fn recognizes_and_groups_generated_security_scan_workspaces() {
+        assert!(security_scan_identity("/tmp/codex-security-scans-abc123").is_none());
+        assert!(security_scan_identity("/tmp/codex-security-scans-abc123/repo").is_none());
         let identity = security_scan_identity(
             "/tmp/codex-security-scans-abc123/linux-x64/run-42/output/nested",
         )
@@ -1134,6 +1215,27 @@ mod tests {
                 .display_number,
             1
         );
+    }
+
+    #[test]
+    fn resumed_chats_move_to_the_top_and_keep_numbers_aligned_with_rows() {
+        let mut earlier = sample_session("z-project", 1);
+        let mut newer = sample_session("a-project", 2);
+        earlier.timestamp = Local::now() - chrono::Duration::days(30);
+        earlier.last_updated = Local::now();
+        newer.timestamp = Local::now() - chrono::Duration::days(1);
+        newer.last_updated = newer.timestamp;
+        let display = display_sessions(&[newer, earlier]);
+        assert_eq!(display[0].session.session_id, "session-1");
+        assert_eq!(display[0].display_number, 1);
+        let rows = crate::browser::fzf_rows(
+            &display,
+            &display,
+            &std::collections::BTreeSet::new(),
+            false,
+        );
+        assert!(rows[0].contains("z-project"));
+        assert!(rows[1].starts_with("S:codex:session-1\t1\t"));
     }
 
     #[test]

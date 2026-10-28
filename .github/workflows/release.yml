@@ -56,7 +56,8 @@ jobs:
         run: |
           mkdir -p dist
           cp "target/release/${{ matrix.binary_name }}" dist/
-          cp README.md LICENSE dist/
+          cp README.md LICENSE CONTRIBUTING.md CHANGELOG.md dist/
+          cp -R docs dist/
           tar -czf "${{ matrix.archive_name }}" -C dist .
 
       - name: Package archive (Windows)
@@ -67,6 +68,9 @@ jobs:
           Copy-Item "target/release/${{ matrix.binary_name }}" "dist/${{ matrix.binary_name }}"
           Copy-Item README.md dist/README.md
           Copy-Item LICENSE dist/LICENSE
+          Copy-Item CONTRIBUTING.md dist/CONTRIBUTING.md
+          Copy-Item CHANGELOG.md dist/CHANGELOG.md
+          Copy-Item docs dist/docs -Recurse
           Compress-Archive -Path dist/* -DestinationPath "${{ matrix.archive_name }}" -Force
 
       - name: Upload packaged asset

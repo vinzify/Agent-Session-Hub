@@ -1,4 +1,4 @@
-use crate::formatting::{compress_text, format_bytes};
+use crate::formatting::{compress_text, format_bytes, format_count};
 use crate::session::{SessionRecord, security_scan_identity};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Local};
@@ -229,7 +229,7 @@ pub fn select_cleanup_groups(groups: &[CleanupGroup]) -> Result<Vec<String>> {
                 group.kind.label().to_string(),
                 format_bytes(group.storage_bytes),
                 format!("{}d old", group.age_days(now)),
-                format!("{} sessions", group.session_ids.len()),
+                format_count(group.session_ids.len(), "session"),
                 compress_text(&group.title, 72),
                 group.detail.clone(),
             ]

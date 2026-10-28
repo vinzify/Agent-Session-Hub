@@ -41,3 +41,35 @@ Example:
 - `fzf`
 - `codex`, `claude`, and/or `opencode`
 - Rust only when installing from a local checkout
+
+## Release platforms
+
+Prebuilt archives are available for Linux x86-64, macOS Intel and Apple Silicon,
+and Windows x86-64. Other targets require a source build and compatible system
+dependencies.
+
+## Update and refresh shell integration
+
+Run the one-command installer again to update the executable and shell
+integration. Reload the profile as directed by the installer so new management
+commands are available through existing shell functions.
+
+To refresh shell integration separately:
+
+```sh
+csx install-shell
+```
+
+## Uninstall
+
+macOS / Linux:
+
+```sh
+curl -fsSL https://github.com/vinzify/Agent-Session-Hub/releases/latest/download/uninstall.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://github.com/vinzify/Agent-Session-Hub/releases/latest/download/uninstall.ps1 | iex
+```

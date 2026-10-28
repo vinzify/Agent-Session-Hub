@@ -1,192 +1,223 @@
+<h1 align="center">Agent Session Hub</h1>
+
 <p align="center">
-  <img src="./banner.png" alt="Agent Session Hub banner">
+  Find, preview, and resume your AI coding sessions from the terminal.
 </p>
 
-# Agent Session Hub
+<p align="center">
+  <a href="https://github.com/vinzify/Agent-Session-Hub/actions/workflows/ci.yml"><img src="https://github.com/vinzify/Agent-Session-Hub/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="https://github.com/vinzify/Agent-Session-Hub/releases/latest"><img src="https://img.shields.io/github/v/release/vinzify/Agent-Session-Hub" alt="Latest release"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
+</p>
 
-Jump back into any Codex CLI, Claude Code, or OpenCode session from one picker.
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#everyday-use">Usage</a> ·
+  <a href="#storage-cleanup">Storage cleanup</a> ·
+  <a href="#supported-providers">Providers</a> ·
+  <a href="./CONTRIBUTING.md">Contribute</a>
+</p>
 
-Agent Session Hub is a native Rust CLI that gives AI coding tools a shared, `fzf`-powered session switcher with previews, aliases, and resume-in-project behavior.
+Agent Session Hub is a native Rust CLI for **Codex CLI, Claude Code, and OpenCode**.
+It brings local session history into an `fzf` picker, groups conversations by
+workspace, and reopens them from the right project directory.
 
-## What It Solves
+![Session picker with workspace grouping, an expanded agent tree, storage sizes, and a preview pane](./docs/images/session-picker.png)
 
-- One session picker across `codex`, `claude`, and `opencode`
-- Resume from the right project directory instead of hunting through history
-- Preview sessions before reopening them
-- Keep Codex agents collapsed beneath their connected conversations, with separate storage totals
-- Collapse generated Codex Security runs and clean old scan or agent data safely
-- Rename, reset, and delete sessions without leaving the terminal
-- Keep fast daily commands: `csx`, `clx`, and `opx`
+*Actual terminal capture using fictional projects and sessions. Colors and layout
+follow your terminal and `fzf` configuration.*
+
+## Why use it?
+
+- **Get back to work quickly.** Search across projects and branches, preview a
+  conversation, and press `Enter` to resume.
+- **Keep history readable.** Codex agents sit beneath their parent chat;
+  generated security scans collapse into one expandable row per run.
+- **Understand storage use.** See individual session sizes, connected agent
+  totals, and combined workspace totals.
+- **Manage sessions in place.** Rename conversations, reset aliases, or delete
+  supported sessions from the picker.
+- **Keep large histories responsive.** An incremental metadata cache reuses
+  unchanged Codex and Claude logs while refreshing aliases and Git information.
+- **Use your existing tools.** No hosted account or additional runtime is
+  required; release installs include a native executable.
 
 ## Install
 
-macOS / Linux:
+**macOS / Linux**
 
 ```sh
 curl -fsSL https://github.com/vinzify/Agent-Session-Hub/releases/latest/download/install.sh | sh
 ```
 
-Windows PowerShell:
+**Windows PowerShell**
 
 ```powershell
 irm https://github.com/vinzify/Agent-Session-Hub/releases/latest/download/install.ps1 | iex
 ```
 
-The public installer downloads the matching release binary for your platform and installs:
+You need `fzf` and at least one supported coding CLI in your `PATH`. The installer
+adds `sessionhub`, `csx`, `clx`, and `opx`, and sets up shell integration. Reload
+your shell using the command printed by the installer.
 
-- `sessionhub`
-- `csx`
-- `clx`
-- `opx`
+Run the same installer to update. See [installation details](./docs/install.md)
+for source builds, supported platforms, and uninstall instructions.
 
-## Use It In 10 Seconds
+## Everyday use
+
+Open the provider chooser, or go straight to a specific history:
 
 ```sh
-sessionhub
-sessionhub providers
-sessionhub help
+sessionhub     # Choose a provider
+csx            # Codex CLI
+clx            # Claude Code
+opx            # OpenCode
 ```
 
-`sessionhub` is the discovery entrypoint. Once it becomes muscle memory, use the direct launchers:
+Workspaces and conversations appear in order of recent activity. The date column
+shows the last update, so a resumed conversation moves back toward the top.
+With shell integration, opening a session also changes your shell to its project
+directory when that directory exists.
+
+### Search
+
+Type inside the picker, or pass a query when launching it:
 
 ```sh
-csx
-clx
-opx
-```
-
-Examples:
-
-```sh
-csx browse repo:Agent-Session-Hub
+csx browse atlas
+csx browse repo:atlas
 clx browse branch:main
-opx browse title:landing
-csx rename <session-id> --name "Fix auth bug"
-opx delete <session-id>
-csx cleanup --dry-run
+opx browse title:release
+csx browse 12
 ```
 
-Inside the picker, press `Ctrl-A` on a Codex conversation to expand or collapse its
-connected agent tree. Searching for an agent name or path reveals that agent with
-its parent conversation. Deleting a conversation also deletes its connected agent
-session files after the confirmation lists both counts; deleting an individual
-expanded agent affects only that agent.
+| Query | Matches |
+| --- | --- |
+| `atlas` | Project or repository names; also Codex agent names and paths |
+| `repo:atlas` or `r:atlas` | Repository name |
+| `branch:main` or `b:main` | Branch name |
+| `title:release` or `t:release` | Conversation title or alias; also agent names and paths |
+| `12` | Conversation numbers beginning with `12` |
 
-Generated Codex Security sessions are collapsed into one row per scan run. Press
-`Ctrl-A` on a security-scan row to reveal its generated chats, then use `Ctrl-A`
-again on a chat to reveal its agents.
+### Picker shortcuts
 
-## Storage Cleanup
+| Key | Action |
+| --- | --- |
+| `Enter` | Resume the selected conversation; a workspace row opens its latest chat |
+| `Ctrl-A` | Expand or collapse a Codex agent tree or security-scan run |
+| `Tab` | Mark multiple rows for supported actions |
+| `Ctrl-E` | Rename the selected session with a local alias |
+| `Ctrl-R` | Reset its alias |
+| `Ctrl-D` | Review and confirm deletion, where supported |
+| `Esc` | Close the picker |
 
-Codex scans and subagents can accumulate large session logs. Preview everything
-that currently qualifies for cleanup without changing any files:
+Searching for an agent keeps its parent conversation visible. Opening that agent
+resumes the connected conversation. Deleting a root conversation includes its
+connected agent logs; deleting an expanded agent removes only that agent log.
+
+### Direct commands
+
+```sh
+csx rename <session-id> --name "Account recovery"
+csx reset <session-id>
+csx delete <session-id>
+csx doctor
+```
+
+Aliases are stored by Agent Session Hub. `delete` removes session data and is
+immediate when invoked as a direct command; use `Ctrl-D` in the picker for an
+interactive confirmation. Run `csx help`, `clx help`, or `opx help` for commands,
+or `sessionhub providers` to check provider availability.
+
+## Storage cleanup
+
+Codex scan and agent logs can accumulate over time. The cleaner groups eligible
+logs by scan run, parent chat, or orphan workspace and shows how much space each
+group occupies.
+
+![Interactive cleaner showing old security-scan logs and agents grouped by their parent conversation](./docs/images/storage-cleanup.png)
+
+*Actual terminal capture with fictional cleanup candidates.*
+
+Start with a preview that leaves session files unchanged:
 
 ```sh
 csx cleanup --dry-run
 ```
 
-Run the interactive cleaner with `csx cleanup`. Mark groups with `Tab`, press
-`Enter` to review them, and type the exact word `DELETE` to confirm. `Esc` cancels
-without deleting anything.
+Then select the groups you want to remove:
 
 ```sh
-# Interactive cleanup using the safe default retention periods
 csx cleanup
-
-# Limit the candidates to generated Codex Security scan runs
-csx cleanup --security-scans
-
-# Preview linked agents older than 90 days
-csx cleanup --dry-run --agents --older-than 90d
-
-# Clean agents whose parent chat no longer exists
-csx cleanup --orphans --older-than 7d
 ```
 
-The default retention periods are 7 days for generated security scans, 30 days
-for agents linked to retained chats, and 7 days for orphan agents. An age can use
-hours, days, or weeks (`12h`, `7d`, `4w`); a bare number means days.
+Press `Tab` to mark groups, `Enter` to review them, and type the exact word
+`DELETE` to confirm permanent removal. `Esc` cancels the picker.
 
-Cleanup has these safeguards:
-
-- Normal root chats are never offered as cleanup candidates.
-- Cleaning linked agents preserves their parent chat.
-- A security-scan group includes only generated scan chats and agents under that
-  scan's temporary run directory.
-- A scan run is offered only after its newest session passes the retention age.
-- Nothing is removed during `--dry-run`, and interactive deletion requires the
-  exact `DELETE` confirmation.
-
-## What Makes It Different
-
-| Capability | Provider-native history | Agent Session Hub |
+| Category | Default age | What cleanup removes |
 | --- | --- | --- |
-| One picker across multiple AI CLIs | No | Yes |
-| Fuzzy search with `fzf` | Varies | Yes |
-| Preview pane before resume | Rare | Yes |
-| Resume from the matching project directory | Varies | Yes |
-| Repo and branch-aware grouping | No | Yes |
-| Collapsed Codex agent hierarchy and storage totals | No | Yes |
-| Collapsed security-scan runs and guarded storage cleanup | No | Yes |
-| Rename and reset session aliases | Rare | Yes |
-| Delete from the picker | Varies | Yes |
+| Security scans | 7 days | Generated scan chats and agents within a recognized scan run |
+| Linked agents | 30 days | Eligible agent logs; the parent chat is retained |
+| Orphan agents | 7 days | Eligible agent logs whose root chat is missing |
 
-## Supported Providers
+Normal root chats are never cleanup candidates. A security-scan run becomes
+eligible only after its newest session passes the age threshold. Cleanup removes
+the selected session logs, not project files or scan report directories.
+Groups that change while you review them are skipped and can be reviewed again.
 
-- Codex CLI via `csx`
-- Claude Code via `clx`
-- OpenCode via `opx`
-
-Requirements:
-
-- `fzf` in `PATH`
-- At least one of `codex`, `claude`, or `opencode`
-- Rust only when installing from a local checkout
-
-## Shell Behavior
-
-The installers automatically run:
+Filter by category or choose a different retention period:
 
 ```sh
-csx install-shell
+csx cleanup --security-scans
+csx cleanup --dry-run --agents --older-than 90d
+csx cleanup --orphans --older-than 7d
+csx cleanup --help
 ```
 
-That shell integration keeps the direct launchers shell-native for resume flows:
+You can combine category flags. Ages accept hours, days, or weeks (`12h`, `7d`,
+`4w`); a bare number means days. Cleanup runs only when requested.
 
-- select a session
-- change into the matching project directory when possible
-- reopen the session with `codex`, `claude`, or `opencode`
+## Supported providers
 
-To remove shell integration:
+| Capability | Codex CLI (`csx`) | Claude Code (`clx`) | OpenCode (`opx`) |
+| --- | --- | --- | --- |
+| Search, preview, and resume | Yes | Yes | Yes |
+| Workspace grouping and local aliases | Yes | Yes | Yes |
+| Per-session storage sizes | File size | File size | Estimated payload size |
+| Session deletion | Yes | No | Yes |
+| Connected agent trees and scan grouping | Yes | — | — |
+| Age-based storage cleanup | Yes | — | — |
 
-```sh
-csx uninstall-shell
-```
+OpenCode stores sessions in a shared SQLite database. Its displayed sizes are
+estimates of session payloads, not guaranteed disk space reclaimed by deletion.
 
-## Local Install
+## Performance and local data
+
+Codex and Claude session metadata is cached in your operating system's cache
+directory under `agent-session-hub`. Only new or changed logs are reparsed;
+removed logs disappear on the next load. Aliases, relative ages, project
+existence, and Git information are refreshed each time.
+
+The cache contains identifiers, paths, timestamps, and short previews. It can be
+removed and will rebuild automatically. Set `CODEX_SESSION_HUB_DISABLE_CACHE=1`
+to bypass it, or `CODEX_SESSION_HUB_CACHE_ROOT` to choose another cache directory.
+See [architecture and configuration](./docs/architecture.md) for details.
+
+## Build and contribute
+
+Rust is required only when building from source:
 
 ```sh
 git clone https://github.com/vinzify/Agent-Session-Hub.git
 cd Agent-Session-Hub
+cargo test --locked
 ./install.sh
 ```
 
-```powershell
-git clone https://github.com/vinzify/Agent-Session-Hub.git
-cd Agent-Session-Hub
-.\install.ps1
-```
+On Windows, use `.\install.ps1` for the local install.
 
-## Repo Layout
+Read [CONTRIBUTING.md](./CONTRIBUTING.md) for development and release guidance.
+Bug reports are welcome in [GitHub Issues](https://github.com/vinzify/Agent-Session-Hub/issues);
+include your OS, provider, and the output of the relevant `doctor` command.
 
-- `src/app.rs`: CLI dispatch and provider-mode selection
-- `src/session.rs`: Codex JSONL, Claude JSONL, and OpenCode SQLite parsing plus filtering
-- `src/browser.rs`: `fzf` row generation, preview output, and picker actions
-- `src/cleanup.rs`: retention policies and guarded Codex session cleanup
-- `src/config.rs`: alias persistence and legacy index import
-- `src/shell.rs`: shell integration for bash, zsh, fish, PowerShell, and Windows `cmd`
-- `src/provider.rs`: provider metadata and runtime behavior
-
-## Contributing
-
-Start with [CONTRIBUTING.md](./CONTRIBUTING.md).
+Licensed under the [MIT License](./LICENSE).

@@ -149,7 +149,11 @@ fn generic_dispatch(args: &[String]) -> Result<()> {
         "uninstall-shell" => uninstall_shell_command(ProviderKind::Codex),
         _ => {
             let explicit = generic_provider_from_arg(&args[0]);
-            let Some(provider) = explicit.or(prompt_for_provider()?) else {
+            let provider = match explicit {
+                Some(provider) => Some(provider),
+                None => prompt_for_provider()?,
+            };
+            let Some(provider) = provider else {
                 return Ok(());
             };
             let provider_args = if explicit.is_some() { &args[1..] } else { args };
@@ -525,7 +529,8 @@ fn parse_cleanup_age(value: &str) -> Result<Duration> {
     }
     amount
         .checked_mul(multiplier)
-        .map(Duration::seconds)
+        .and_then(Duration::try_seconds)
+        .filter(|age| Local::now().checked_sub_signed(*age).is_some())
         .ok_or_else(|| anyhow!("cleanup age is too large"))
 }
 
@@ -657,7 +662,7 @@ fn cleanup_command(provider: ProviderKind, args: &[String]) -> Result<()> {
         return Ok(());
     }
     let (policy, dry_run) = parse_cleanup_options(args)?;
-    let (mut alias_index, sessions) = load_index_and_sessions(provider)?;
+    let (_alias_index, sessions) = load_index_and_sessions(provider)?;
     let groups = cleanup_groups(&sessions, &policy, Local::now());
     if groups.is_empty() {
         println!("No cleanup candidates match the selected retention policy.");
@@ -683,7 +688,34 @@ fn cleanup_command(provider: ProviderKind, args: &[String]) -> Result<()> {
         return Ok(());
     }
 
-    let selected_ids = selected_groups
+    // Selection and confirmation can take minutes. Recheck eligibility and the
+    // group contents before deleting, so logs resumed in the meantime survive.
+    let (mut alias_index, sessions) = load_index_and_sessions(provider)?;
+    let current_groups = cleanup_groups(&sessions, &policy, Local::now());
+    let unchanged_groups = selected_groups
+        .iter()
+        .filter(|group| {
+            current_groups.iter().any(|current| {
+                current.key == group.key
+                    && current.latest_updated == group.latest_updated
+                    && current.storage_bytes == group.storage_bytes
+                    && current.session_ids.iter().collect::<HashSet<_>>()
+                        == group.session_ids.iter().collect::<HashSet<_>>()
+            })
+        })
+        .copied()
+        .collect::<Vec<_>>();
+    if unchanged_groups.len() != selected_groups.len() {
+        eprintln!(
+            "Skipped {} groups that changed while reviewing. Run cleanup again to review them.",
+            selected_groups.len() - unchanged_groups.len()
+        );
+    }
+    if unchanged_groups.is_empty() {
+        println!("No unchanged cleanup candidates remain.");
+        return Ok(());
+    }
+    let selected_ids = unchanged_groups
         .iter()
         .flat_map(|group| group.session_ids.iter().cloned())
         .collect::<HashSet<_>>();
@@ -973,6 +1005,11 @@ fn doctor_command(provider: ProviderKind) -> Result<()> {
     println!("SessionRoot: {}", session_root.display());
     println!("SessionRootExists: {}", session_root.exists());
     println!("ConfigRoot: {}", config_root.display());
+    println!("CacheRoot: {}", crate::cache::cache_root().display());
+    println!(
+        "CacheEnabled: {}",
+        std::env::var("CODEX_SESSION_HUB_DISABLE_CACHE").as_deref() != Ok("1")
+    );
     println!("FzfAvailable: {fzf_available}");
     println!("BinaryName: {}", provider.binary_name());
     println!("CommandAvailable: {binary_available}");
@@ -1060,6 +1097,8 @@ mod tests {
         assert_eq!(parse_cleanup_age("30").unwrap(), Duration::days(30));
         assert!(parse_cleanup_age("-1d").is_err());
         assert!(parse_cleanup_age("tomorrow").is_err());
+        assert!(parse_cleanup_age("9223372036854775807h").is_err());
+        assert!(parse_cleanup_age("100000000000d").is_err());
     }
 
     #[test]

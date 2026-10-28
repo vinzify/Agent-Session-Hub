@@ -1,4 +1,6 @@
-use crate::formatting::{ascii_banner, compress_text, format_bytes};
+use crate::formatting::{
+    ascii_banner, compress_text, escape_sh_single_quotes, format_bytes, format_count,
+};
 use crate::provider::ProviderKind;
 use crate::session::{DisplaySession, SessionRecord, security_scan_identity};
 use anyhow::{Context, Result, anyhow};
@@ -34,7 +36,7 @@ fn fzf_shell_command(exe: &std::path::Path, command: &str) -> String {
     if cfg!(windows) {
         format!("\"{exe_text}\" {command}")
     } else {
-        format!("'{}' {command}", exe_text)
+        format!("'{}' {command}", escape_sh_single_quotes(&exe_text))
     }
 }
 
@@ -72,7 +74,7 @@ fn fzf_row_with_labels(
             entry.session.storage_bytes,
             entry.session.storage_size_is_estimate,
         ),
-        entry.session.timestamp_text.clone(),
+        entry.session.last_updated_text.clone(),
         compress_text(&workspace, 28),
         compress_text(&title, 90),
         entry.session.project_path.clone(),
@@ -125,7 +127,7 @@ fn push_agent_tree(
         .copied()
         .filter(|item| item.session.is_agent && item.session.parent_session_id == parent_id)
         .collect::<Vec<_>>();
-    children.sort_by(|left, right| right.session.timestamp.cmp(&left.session.timestamp));
+    children.sort_by(|left, right| right.session.last_updated.cmp(&left.session.last_updated));
     for child in children {
         if !emitted.insert(child.session.session_id.clone()) {
             continue;
@@ -146,6 +148,17 @@ pub fn fzf_rows(
     expanded_roots: &BTreeSet<String>,
     reveal_agents: bool,
 ) -> Vec<String> {
+    let mut all_groups = BTreeMap::<(ProviderKind, String), Vec<&DisplaySession>>::new();
+    let mut group_order = BTreeMap::new();
+    for (position, entry) in all_entries.iter().enumerate() {
+        group_order
+            .entry((entry.session.provider, entry.group_key.clone()))
+            .or_insert(position);
+        all_groups
+            .entry((entry.session.provider, entry.group_key.clone()))
+            .or_default()
+            .push(entry);
+    }
     let mut groups = BTreeMap::<(ProviderKind, String), Vec<&DisplaySession>>::new();
     for entry in entries {
         groups
@@ -154,14 +167,17 @@ pub fn fzf_rows(
             .push(entry);
     }
 
+    let mut groups = groups.into_iter().collect::<Vec<_>>();
+    // Keep exactly the same workspace order used for conversation numbering.
+    groups.sort_by_key(|(key, _)| group_order.get(key).copied().unwrap_or(usize::MAX));
     let mut rows = Vec::new();
     for ((provider, group_key), items) in groups {
         let is_security_scan = group_key.starts_with("security-scan:");
         let scan_expanded = expanded_roots.contains(&scan_group_marker(&group_key));
-        let all_items = all_entries
-            .iter()
-            .filter(|item| item.session.provider == provider && item.group_key == group_key)
-            .collect::<Vec<_>>();
+        let all_items = all_groups
+            .get(&(provider, group_key.clone()))
+            .cloned()
+            .unwrap_or_else(|| items.clone());
         let representative = all_items
             .iter()
             .copied()
@@ -202,11 +218,19 @@ pub fn fzf_rows(
             .filter(|item| item.session.is_agent)
             .count();
         let count_label = if is_security_scan {
-            format!("{conversation_count} scan chats · {agent_count} agents")
+            format!(
+                "{} · {}",
+                format_count(conversation_count, "scan chat"),
+                format_count(agent_count, "agent")
+            )
         } else if agent_count > 0 {
-            format!("{conversation_count} chats · {agent_count} agents")
+            format!(
+                "{} · {}",
+                format_count(conversation_count, "chat"),
+                format_count(agent_count, "agent")
+            )
         } else {
-            format!("{conversation_count} chats")
+            format_count(conversation_count, "chat")
         };
         let header = [
             workspace_row_key(provider, &group_key),
@@ -230,7 +254,7 @@ pub fn fzf_rows(
             .copied()
             .filter(|item| !item.session.is_agent)
             .collect::<Vec<_>>();
-        roots.sort_by(|left, right| right.session.timestamp.cmp(&left.session.timestamp));
+        roots.sort_by(|left, right| right.session.last_updated.cmp(&left.session.last_updated));
         let mut emitted = BTreeSet::new();
         if is_security_scan && !scan_expanded && !reveal_agents {
             continue;
@@ -271,9 +295,10 @@ pub fn fzf_rows(
                 item.session.display_title.clone()
             } else {
                 format!(
-                    "{} {} agents · {}  │  {}",
+                    "{} {} {} · {}  │  {}",
                     if expanded { "▼" } else { "▶" },
                     agent_count_label,
+                    if agents.len() == 1 { "agent" } else { "agents" },
                     storage_size(
                         agent_bytes,
                         agents
@@ -380,9 +405,9 @@ fn parse_fzf_output(stdout: &str) -> Option<BrowserResult> {
 
 pub fn browser_header(provider: ProviderKind) -> String {
     let keys_line = if provider.supports_delete() {
-        "Keys: Enter open | Ctrl-A agents | Tab mark | Ctrl-E rename | Ctrl-R reset | Ctrl-D delete(confirm)"
+        "Keys: Enter open | Ctrl-A expand | Tab mark | Ctrl-E rename | Ctrl-R reset | Ctrl-D delete(confirm)"
     } else {
-        "Keys: Enter open | Ctrl-A agents | Tab mark | Ctrl-E rename | Ctrl-R reset"
+        "Keys: Enter open | Ctrl-A expand | Tab mark | Ctrl-E rename | Ctrl-R reset"
     };
     format!("Find: text folder/repo | # number | title:term | repo:term | branch:term\n{keys_line}")
 }
@@ -673,11 +698,19 @@ pub fn workspace_preview(project_sessions: &[&DisplaySession]) -> String {
         .count();
     let agent_count = project_sessions.len() - conversation_count;
     let count_text = if scan_identity.is_some() {
-        format!("{conversation_count} scan chats · {agent_count} agents")
+        format!(
+            "{} · {}",
+            format_count(conversation_count, "scan chat"),
+            format_count(agent_count, "agent")
+        )
     } else if agent_count > 0 {
-        format!("{conversation_count} chats · {agent_count} agents")
+        format!(
+            "{} · {}",
+            format_count(conversation_count, "chat"),
+            format_count(agent_count, "agent")
+        )
     } else {
-        format!("{conversation_count} chats")
+        format_count(conversation_count, "chat")
     };
     let mut lines = vec![
         ascii_banner(

@@ -81,7 +81,7 @@ fn posix_function(name: &str, passthrough: &[&str]) -> String {
         r#"{name}() {{
   case "${{1-}}" in
 {passthrough_cases}
-    doctor|rename|reset|delete|help|install-shell|uninstall-shell|__*)
+    doctor|rename|reset|delete|cleanup|help|--help|-h|install-shell|uninstall-shell|__*)
       command {name} "$@"
       return $?
       ;;
@@ -110,7 +110,7 @@ fn fish_function(name: &str) -> String {
     switch "$first"
         case browse
             set argv $argv[2..-1]
-        case doctor rename reset delete help install-shell uninstall-shell '__*'
+        case doctor rename reset delete cleanup help --help -h install-shell uninstall-shell '__*'
             command {name} $argv
             return $status
     end
@@ -139,7 +139,7 @@ fn powershell_function(name: &str, provider: &str, exe: &str) -> String {
         $commandName = if ($args.Count -gt 0) {{ [string]$args[0] }} else {{ '' }}
     }}
 
-    if ($commandName -in @('doctor', 'rename', 'reset', 'delete', 'help', 'install-shell', 'uninstall-shell') -or $commandName.StartsWith('__')) {{
+    if ($commandName -in @('doctor', 'rename', 'reset', 'delete', 'cleanup', 'help', '--help', '-h', 'install-shell', 'uninstall-shell') -or $commandName.StartsWith('__')) {{
         & '{exe}' --provider {provider} @args
         return
     }}
@@ -173,7 +173,10 @@ if /I \"%ASH_COMMAND%\"==\"doctor\" goto passthrough\r\n\
 if /I \"%ASH_COMMAND%\"==\"rename\" goto passthrough\r\n\
 if /I \"%ASH_COMMAND%\"==\"reset\" goto passthrough\r\n\
 if /I \"%ASH_COMMAND%\"==\"delete\" goto passthrough\r\n\
+if /I \"%ASH_COMMAND%\"==\"cleanup\" goto passthrough\r\n\
 if /I \"%ASH_COMMAND%\"==\"help\" goto passthrough\r\n\
+if /I \"%ASH_COMMAND%\"==\"--help\" goto passthrough\r\n\
+if /I \"%ASH_COMMAND%\"==\"-h\" goto passthrough\r\n\
 if /I \"%ASH_COMMAND%\"==\"install-shell\" goto passthrough\r\n\
 if /I \"%ASH_COMMAND%\"==\"uninstall-shell\" goto passthrough\r\n\
 if \"%ASH_COMMAND:~0,2%\"==\"__\" goto passthrough\r\n\
@@ -238,7 +241,7 @@ pub fn install_posix_shell_integration(shell_name: Option<&str>) -> Result<Shell
         )
     } else {
         format!(
-            "{MARKER_START}\nexport PATH='{}':$PATH\n{}\n{}\n{}\ncxs() {{ csx \"$@\"; }}\n{MARKER_END}",
+            "{MARKER_START}\nexport PATH='{}':$PATH\n{}\n{}\n{}\n{MARKER_END}",
             escape_sh_single_quotes(&launcher_root.to_string_lossy()),
             posix_function("csx", &["browse"]),
             posix_function("clx", &["browse"]),
@@ -313,5 +316,38 @@ mod tests {
         assert!(block.contains("--provider claude __select"));
         assert!(block.contains("--provider claude --resume"));
         assert!(block.contains("goto passthrough"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bash_routes_cleanup_to_the_binary_instead_of_the_picker() {
+        let temp = tempfile::tempdir().unwrap();
+        let launcher = temp.path().join("csx");
+        fs::write(&launcher, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).unwrap();
+        let script = format!(
+            "{}\ncsx cleanup --dry-run\n",
+            posix_function("csx", &["browse"])
+        );
+        let path = std::env::join_paths(std::iter::once(temp.path().to_path_buf()).chain(
+            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+        ))
+        .unwrap();
+        let output = std::process::Command::new("bash")
+            .args(["--noprofile", "--norc", "-c", &script])
+            .env("PATH", path)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "cleanup\n--dry-run\n"
+        );
+        assert!(fish_function("csx").contains("delete cleanup help"));
+        assert!(powershell_profile_block(Path::new("/tmp/hub")).contains("'cleanup'"));
+        assert!(
+            cmd_launcher_content("hub.exe", "codex").contains("==\"cleanup\" goto passthrough")
+        );
     }
 }
