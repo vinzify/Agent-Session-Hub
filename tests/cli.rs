@@ -147,6 +147,54 @@ fn explicit_provider_command_never_prompts_for_a_provider() {
 }
 
 #[test]
+fn query_aware_preview_replaces_a_stale_selection_during_reload() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    fs::create_dir(root.join("sessions")).unwrap();
+    write_session(
+        &root.join("sessions/first.jsonl"),
+        "first",
+        &root.join("alpha"),
+        "Review the account settings implementation",
+    );
+    write_session(
+        &root.join("sessions/second.jsonl"),
+        "second",
+        &root.join("beta"),
+        "Release the compatibility update",
+    );
+    let output = cli(
+        root,
+        &[
+            "--provider",
+            "codex",
+            "__preview",
+            "--query",
+            "title:Release",
+            "S:codex:first",
+        ],
+    );
+    assert!(output.status.success());
+    let preview = String::from_utf8(output.stdout).unwrap();
+    assert!(preview.contains("Release the compatibility update"));
+    assert!(!preview.contains("Review the account settings implementation"));
+
+    let output = cli(
+        root,
+        &[
+            "--provider",
+            "codex",
+            "__preview",
+            "--query",
+            "title:no-such-session",
+            "S:codex:first",
+        ],
+    );
+    assert!(output.status.success());
+    assert!(String::from_utf8(output.stdout).unwrap().trim().is_empty());
+}
+
+#[test]
 fn browsing_survives_an_unavailable_cache_directory() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();

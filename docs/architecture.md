@@ -35,6 +35,28 @@ Workspace and conversation ordering uses last activity with deterministic
 tie-breaks. The browser indexes all sessions by group once per render so it does
 not rescan the entire history for every workspace.
 
+## Picker compatibility
+
+The browser targets fzf 0.29 and newer. Its initial rows are supplied from one
+prepared, rewound temporary file; subsequent searches use `change:reload(...)`.
+This avoids relying on newer `start`/`reload-sync` bindings, and an early exit
+cannot interrupt a pipe writer. Initial queries and expanded agent/scan state are
+included in the prepared snapshot.
+
+Preview commands also receive the current query so an older fzf version's stale
+selection cannot keep an unrelated workspace in the preview during a reload.
+Startup errors are reported, while no-match and user-cancel exit codes remain
+normal exits.
+
+CI exercises the actual picker in a pseudo-terminal with upstream fzf 0.29.0 and
+0.67.0 executables. To run those checks locally on Linux or macOS:
+
+```sh
+cargo build --locked
+uv run --with pexpect==4.9.0 --with pyte==0.8.2 python scripts/test-fzf-compat.py \
+  --binary target/debug/agent-session-hub --fzf /path/to/fzf
+```
+
 ## Configuration
 
 | Environment variable | Purpose |

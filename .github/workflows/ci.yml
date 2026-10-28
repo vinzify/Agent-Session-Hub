@@ -35,3 +35,32 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Run tests
         run: cargo test --locked
+
+  fzf-compat:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: 0.29.0
+            tag: 0.29.0
+          - version: 0.67.0
+            tag: v0.67.0
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build CLI
+        run: cargo build --locked
+      - name: Install terminal test dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/ash-fzf-tests"
+          "$RUNNER_TEMP/ash-fzf-tests/bin/pip" install pexpect==4.9.0 pyte==0.8.2
+      - name: Download fzf ${{ matrix.version }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/fzf"
+          curl -fsSL "https://github.com/junegunn/fzf/releases/download/${{ matrix.tag }}/fzf-${{ matrix.version }}-linux_amd64.tar.gz" -o "$RUNNER_TEMP/fzf.tar.gz"
+          tar -xzf "$RUNNER_TEMP/fzf.tar.gz" -C "$RUNNER_TEMP/fzf"
+          "$RUNNER_TEMP/fzf/fzf" --version
+      - name: Test real interactive picker
+        run: |
+          "$RUNNER_TEMP/ash-fzf-tests/bin/python" scripts/test-fzf-compat.py --binary target/debug/agent-session-hub --fzf "$RUNNER_TEMP/fzf/fzf"

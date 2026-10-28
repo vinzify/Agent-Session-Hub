@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.12
+
+- Fixed picker compatibility with fzf 0.29, including Ubuntu 22.04's packaged version, by integrating the compatible reload binding from [PR #6](https://github.com/vinzify/Agent-Session-Hub/pull/6) by @dongwook-chan
+- Preserved initial session loading for empty and prefilled queries using a single prepared input snapshot, avoiding competing startup streams and broken pipes on early cancellation
+- Kept previews aligned with the current search when older fzf versions retain a previous selection during a reload
+- Reported fzf startup failures instead of silently treating them as cancellation
+- Added real terminal integration checks for fzf 0.29.0 and 0.67.0 in CI, covering startup, search, previews, selection, cancellation, and agent/scan expansion
+
 ## 0.3.11
 
 - Added an incremental metadata cache for Codex and Claude histories, avoiding repeated parsing of unchanged session logs during search and preview

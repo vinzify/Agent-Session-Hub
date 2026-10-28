@@ -38,7 +38,7 @@ Example:
 
 ## Requirements
 
-- `fzf`
+- `fzf` 0.29 or newer (including Ubuntu 22.04's packaged version)
 - `codex`, `claude`, and/or `opencode`
 - Rust only when installing from a local checkout
 

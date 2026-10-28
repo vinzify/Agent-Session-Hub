@@ -56,9 +56,12 @@ curl -fsSL https://github.com/vinzify/Agent-Session-Hub/releases/latest/download
 irm https://github.com/vinzify/Agent-Session-Hub/releases/latest/download/install.ps1 | iex
 ```
 
-You need `fzf` and at least one supported coding CLI in your `PATH`. The installer
+You need `fzf` **0.29 or newer** and at least one supported coding CLI in your `PATH`. The installer
 adds `sessionhub`, `csx`, `clx`, and `opx`, and sets up shell integration. Reload
 your shell using the command printed by the installer.
+
+Ubuntu 22.04's packaged `fzf` 0.29 is supported. Interactive compatibility is
+checked in CI against fzf 0.29.0 and 0.67.0.
 
 Run the same installer to update. See [installation details](./docs/install.md)
 for source builds, supported platforms, and uninstall instructions.

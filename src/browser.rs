@@ -5,7 +5,7 @@ use crate::provider::ProviderKind;
 use crate::session::{DisplaySession, SessionRecord, security_scan_identity};
 use anyhow::{Context, Result, anyhow};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{self, Write};
+use std::io::{self, Seek, SeekFrom, Write};
 use std::process::{Command, Stdio};
 
 #[derive(Clone, Debug)]
@@ -415,12 +415,14 @@ pub fn browser_header(provider: ProviderKind) -> String {
 pub fn run_fzf(
     provider: ProviderKind,
     initial_query: &str,
+    initial_rows: &[String],
     exe: &std::path::Path,
     expanded_roots: &BTreeSet<String>,
 ) -> Result<Option<BrowserResult>> {
     run_fzf_with_program(
         provider,
         initial_query,
+        initial_rows,
         exe,
         std::path::Path::new("fzf"),
         expanded_roots,
@@ -430,6 +432,7 @@ pub fn run_fzf(
 fn run_fzf_with_program(
     provider: ProviderKind,
     initial_query: &str,
+    initial_rows: &[String],
     exe: &std::path::Path,
     fzf_program: &std::path::Path,
     expanded_roots: &BTreeSet<String>,
@@ -455,7 +458,10 @@ fn run_fzf_with_program(
         "--nth".to_string(),
         "2".to_string(),
         "--preview".to_string(),
-        fzf_shell_command(exe, &format!("{provider_flag} __preview {{}}")),
+        fzf_shell_command(
+            exe,
+            &format!("{provider_flag} __preview --query {{q}} {{}}"),
+        ),
         "--preview-window".to_string(),
         "right:40%:wrap".to_string(),
         "--expect".to_string(),
@@ -466,8 +472,7 @@ fn run_fzf_with_program(
         },
         "--bind".to_string(),
         format!(
-            "start:reload-sync({}),change:reload-sync({})+first",
-            fzf_shell_command(exe, &query_command),
+            "change:reload({})+first",
             fzf_shell_command(exe, &format!("{query_command} {{q}}"))
         ),
         "--header".to_string(),
@@ -479,20 +484,33 @@ fn run_fzf_with_program(
         args.push(initial_query.to_string());
     }
 
+    // Seed exactly one initial snapshot. A rewound regular file avoids a pipe
+    // writer racing with reload/cancellation and works without newer fzf events.
+    let mut input = tempfile::tempfile().context("create initial session list")?;
+    for row in initial_rows {
+        writeln!(input, "{row}").context("write initial session list")?;
+    }
+    input
+        .seek(SeekFrom::Start(0))
+        .context("rewind initial session list")?;
+
     let mut command = Command::new(fzf_program);
     command.args(&args);
     command
-        // The start reload is the sole source of rows. Streaming the same rows
-        // through stdin races with fzf closing that pipe for reload and can
-        // surface EPIPE only after the user leaves the selector.
-        .stdin(Stdio::null())
+        .stdin(Stdio::from(input))
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
 
     let child = command.spawn().context("spawn fzf")?;
     let output = child.wait_with_output().context("wait for fzf")?;
-    if !output.status.success() {
+    if matches!(output.status.code(), Some(1 | 130)) {
         return Ok(None);
+    }
+    if !output.status.success() {
+        return Err(anyhow!(
+            "fzf failed with {}. Run doctor to check the installation.",
+            output.status
+        ));
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     Ok(parse_fzf_output(&stdout))
@@ -1029,12 +1047,12 @@ S:codex:abc123
 
     #[cfg(unix)]
     #[test]
-    fn fzf_reload_does_not_receive_a_competing_stdin_stream() {
+    fn fzf_receives_one_initial_snapshot_and_compatible_reload_bindings() {
         let temp = tempfile::tempdir().unwrap();
         let fake_fzf = temp.path().join("fzf");
         fs::write(
             &fake_fzf,
-            "#!/bin/sh\nif IFS= read -r _row; then exit 20; fi\nprintf '\\nS:codex:abc123\\n'\n",
+            "#!/bin/sh\ncase \"$*\" in *start:*|*reload-sync*) exit 20;; esac\n[ -f /dev/stdin ] || exit 21\nIFS= read -r row || exit 22\n[ \"$row\" = 'S:codex:abc123' ] || exit 23\nif IFS= read -r extra; then exit 24; fi\nprintf '\\n%s\\n' \"$row\"\n",
         )
         .unwrap();
         let mut permissions = fs::metadata(&fake_fzf).unwrap().permissions();
@@ -1044,6 +1062,7 @@ S:codex:abc123
         let result = run_fzf_with_program(
             ProviderKind::Codex,
             "",
+            &["S:codex:abc123".to_string()],
             Path::new("/tmp/agent-session-hub"),
             &fake_fzf,
             &BTreeSet::new(),
@@ -1053,5 +1072,44 @@ S:codex:abc123
 
         assert_eq!(result.action, "enter");
         assert_eq!(result.session_ids, vec!["S:codex:abc123"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn early_fzf_cancellation_does_not_break_an_input_pipe() {
+        let temp = tempfile::tempdir().unwrap();
+        let fake_fzf = temp.path().join("fzf");
+        fs::write(&fake_fzf, "#!/bin/sh\nexit 130\n").unwrap();
+        fs::set_permissions(&fake_fzf, fs::Permissions::from_mode(0o755)).unwrap();
+        let rows = vec!["S:codex:abc123".repeat(1024); 256];
+        let result = run_fzf_with_program(
+            ProviderKind::Codex,
+            "",
+            &rows,
+            Path::new("/tmp/agent-session-hub"),
+            &fake_fzf,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fzf_startup_failure_is_reported_instead_of_treated_as_cancellation() {
+        let temp = tempfile::tempdir().unwrap();
+        let fake_fzf = temp.path().join("fzf");
+        fs::write(&fake_fzf, "#!/bin/sh\nexit 2\n").unwrap();
+        fs::set_permissions(&fake_fzf, fs::Permissions::from_mode(0o755)).unwrap();
+        let error = run_fzf_with_program(
+            ProviderKind::Codex,
+            "",
+            &[],
+            Path::new("/tmp/agent-session-hub"),
+            &fake_fzf,
+            &BTreeSet::new(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("fzf failed"));
     }
 }

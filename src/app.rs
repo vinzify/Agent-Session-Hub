@@ -408,7 +408,7 @@ fn browse_command(provider: ProviderKind, query: &str) -> Result<()> {
         if rows.is_empty() {
             return Ok(());
         }
-        let Some(result) = run_fzf(provider, &query, &exe, &expanded_roots)? else {
+        let Some(result) = run_fzf(provider, &query, &rows, &exe, &expanded_roots)? else {
             return Ok(());
         };
         let selected = resolve_selected_sessions(&display, &result.session_ids);
@@ -753,13 +753,37 @@ fn cleanup_command(provider: ProviderKind, args: &[String]) -> Result<()> {
 }
 
 fn hidden_preview(provider: ProviderKind, args: &[String]) -> Result<()> {
-    let (session_id, workspace_key, project_path) = if let Some(raw) = args.first() {
+    let (query, target) = if args.first().map(String::as_str) == Some("--query") {
+        (args.get(1).map(String::as_str), args.get(2))
+    } else {
+        (None, args.first())
+    };
+    let (mut session_id, mut workspace_key, mut project_path) = if let Some(raw) = target {
         parse_row_target(raw)
     } else {
         (String::new(), String::new(), String::new())
     };
     let (_index, sessions) = load_index_and_sessions(provider)?;
     let display = display_sessions(&sessions);
+    if let Some(query) = query {
+        let filtered = filter_display_sessions(&sessions, query);
+        // Older fzf releases may request a preview for the previous first row
+        // while an asynchronous reload is replacing it. Resolve that row against
+        // the current query, whose first visible row is a workspace header.
+        let target_matches = filtered.iter().any(|entry| {
+            (!session_id.is_empty() && entry.session.session_id == session_id)
+                || (!workspace_key.is_empty() && entry.group_key == workspace_key)
+                || (!project_path.is_empty() && entry.session.project_path == project_path)
+        });
+        if !target_matches {
+            session_id.clear();
+            project_path.clear();
+            workspace_key = filtered
+                .first()
+                .map(|entry| entry.group_key.clone())
+                .unwrap_or_default();
+        }
+    }
     write_preview(
         provider,
         &display,
@@ -836,7 +860,7 @@ fn hidden_select(provider: ProviderKind, args: &[String]) -> Result<()> {
         if rows.is_empty() {
             return Ok(());
         }
-        let Some(result) = run_fzf(provider, &query, &exe, &expanded_roots)? else {
+        let Some(result) = run_fzf(provider, &query, &rows, &exe, &expanded_roots)? else {
             return Ok(());
         };
         let selected = resolve_selected_sessions(&display, &result.session_ids);
