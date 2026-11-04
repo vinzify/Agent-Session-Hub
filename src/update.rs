@@ -284,6 +284,19 @@ fn now() -> u64 {
 fn cache_path() -> PathBuf {
     crate::cache::cache_root().join("update-check.json")
 }
+
+fn save_cache(cache: &CachedCheck) -> Result<()> {
+    let path = cache_path();
+    let mut directory = fs::DirBuilder::new();
+    directory.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        directory.mode(0o700);
+    }
+    directory.create(path.parent().context("cache has no directory")?)?;
+    crate::atomic::write(&path, &serde_json::to_vec(cache)?)
+}
 fn newer(tag: &str) -> bool {
     release_version(tag)
         .is_ok_and(|version| version > Version::parse(env!("CARGO_PKG_VERSION")).unwrap())
@@ -315,8 +328,7 @@ impl Notice {
         {
             return notice;
         }
-        let path = cache_path();
-        let cached = fs::read(&path)
+        let cached = fs::read(cache_path())
             .ok()
             .and_then(|bytes| serde_json::from_slice::<CachedCheck>(&bytes).ok());
         notice.shown = notification(cached.as_ref().and_then(|cache| cache.tag.as_deref()));
@@ -334,7 +346,7 @@ impl Notice {
             tag: cached.and_then(|cache| cache.tag),
         };
         // Reserve the daily attempt before networking; failures keep the previous known release.
-        if crate::atomic::write(&path, &serde_json::to_vec(&pending).unwrap()).is_err() {
+        if save_cache(&pending).is_err() {
             return notice;
         }
         notice.worker = Some(std::thread::spawn(move || {
@@ -343,7 +355,7 @@ impl Notice {
                 checked_at: now(),
                 tag: Some(release.tag_name),
             };
-            let _ = crate::atomic::write(&path, &serde_json::to_vec(&cache).ok()?);
+            let _ = save_cache(&cache);
             notification(cache.tag.as_deref())
         }));
         notice
@@ -398,7 +410,7 @@ fn check_command(args: &[String]) -> Result<()> {
         checked_at: now(),
         tag: Some(release.tag_name.clone()),
     };
-    let _ = crate::atomic::write(&cache_path(), &serde_json::to_vec(&cache)?);
+    let _ = save_cache(&cache);
     println!(
         "{}",
         notification(Some(&release.tag_name)).unwrap_or_else(|| format!(

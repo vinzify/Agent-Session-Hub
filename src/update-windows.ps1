@@ -28,8 +28,8 @@ try {
             temp = $item.destination + '.update-' + [guid]::NewGuid().ToString('N')
             backup = $item.destination + '.backup-' + [guid]::NewGuid().ToString('N')
         }
-        [System.IO.File]::Copy($item.source, $entry.temp)
         $staged += $entry
+        [System.IO.File]::Copy($item.source, $entry.temp)
     }
     foreach ($entry in $staged) {
         [System.IO.File]::Replace($entry.temp, $entry.destination, $entry.backup)
@@ -41,7 +41,9 @@ try {
     $originalError = $_
     [array]::Reverse($committed)
     foreach ($entry in $committed) {
-        try { [System.IO.File]::Replace($entry.backup, $entry.destination, $null) }
+        # Use a real discard path: Windows PowerShell can coerce $null to an
+        # empty string for this .NET overload, which prevents rollback.
+        try { [System.IO.File]::Replace($entry.backup, $entry.destination, $entry.temp) }
         catch { Write-Warning "Recovery backup retained at $($entry.backup): $_" }
     }
     Write-Error "Update failed; original launchers restored where possible. Close other hub processes and retry. $originalError" -ErrorAction Continue
