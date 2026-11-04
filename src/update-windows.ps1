@@ -28,7 +28,7 @@ try {
             temp = $item.destination + '.update-' + [guid]::NewGuid().ToString('N')
             backup = $item.destination + '.backup-' + [guid]::NewGuid().ToString('N')
         }
-        Copy-Item -LiteralPath $item.source -Destination $entry.temp
+        [System.IO.File]::Copy($item.source, $entry.temp)
         $staged += $entry
     }
     foreach ($entry in $staged) {
@@ -48,9 +48,9 @@ try {
     exit 1
 } finally {
     foreach ($entry in $staged) {
-        if (Test-Path -LiteralPath $entry.temp) { Remove-Item -LiteralPath $entry.temp -Force }
+        if ([System.IO.File]::Exists($entry.temp)) { [System.IO.File]::Delete($entry.temp) }
         # Failed rollback backups must remain available for manual recovery.
-        if ($succeeded -and (Test-Path -LiteralPath $entry.backup)) { Remove-Item -LiteralPath $entry.backup -Force }
+        if ($succeeded -and [System.IO.File]::Exists($entry.backup)) { [System.IO.File]::Delete($entry.backup) }
     }
-    Remove-Item -LiteralPath $resolvedStage -Recurse -Force
+    [System.IO.Directory]::Delete($resolvedStage, $true)
 }

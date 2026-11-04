@@ -669,8 +669,10 @@ mod tests {
                 .tempdir()
                 .unwrap();
             let targets = tempfile::tempdir().unwrap();
-            let a = targets.path().join("first è.exe");
-            let b = targets.path().join("second.exe");
+            // Real installation records use canonical Windows extended paths.
+            let canonical = targets.path().canonicalize().unwrap();
+            let a = canonical.join("first è.exe");
+            let b = canonical.join("second.exe");
             fs::write(&a, b"old a").unwrap();
             fs::write(&b, b"old b").unwrap();
             let source = stage.path().join("payload");
