@@ -45,6 +45,40 @@ fn write_session(path: &Path, id: &str, project: &Path, title: &str) {
 }
 
 #[test]
+fn corrupt_alias_index_blocks_mutations_without_touching_sessions_or_aliases() {
+    for command in [
+        vec!["rename", "chat", "--name", "New title"],
+        vec!["reset", "chat"],
+        vec!["delete", "chat"],
+        vec!["cleanup", "--dry-run"],
+        vec!["__query"],
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir(root.join("sessions")).unwrap();
+        fs::create_dir(root.join("config")).unwrap();
+        let session = root.join("sessions/chat.jsonl");
+        write_session(
+            &session,
+            "chat",
+            &root.join("project"),
+            "Keep this conversation",
+        );
+        let before = fs::read(&session).unwrap();
+        let index = root.join("config/index.json");
+        let damaged = b"{\"providers\": { damaged";
+        fs::write(&index, damaged).unwrap();
+        let mut args = vec!["--provider", "codex"];
+        args.extend(command);
+        let output = cli(root, &args);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("file left unchanged"));
+        assert_eq!(fs::read(index).unwrap(), damaged);
+        assert_eq!(fs::read(session).unwrap(), before);
+    }
+}
+
+#[test]
 fn cached_queries_follow_file_changes_aliases_new_sessions_and_deletions() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();

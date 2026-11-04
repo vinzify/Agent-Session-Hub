@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.13
+
+- Fixed #7: corrupt primary/legacy alias indexes now fail clearly instead of becoming empty and being overwritten
+- Refused unsupported versions and unknown alias fields to preserve future-format data
+- Saved alias indexes through same-directory staged files, flush, and atomic replacement; rechecked the destination before saving
+- Added corruption, migration, preservation, and failed-replacement regression coverage
+
 ## 0.3.12
 
 - Fixed picker compatibility with fzf 0.29, including Ubuntu 22.04's packaged version, by integrating the compatible reload binding from [PR #6](https://github.com/vinzify/Agent-Session-Hub/pull/6) by @dongwook-chan

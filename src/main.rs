@@ -1,4 +1,5 @@
 mod app;
+mod atomic;
 mod browser;
 mod cache;
 mod cleanup;
