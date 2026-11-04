@@ -509,10 +509,7 @@ fn update_command(args: &[String]) -> Result<()> {
 
 #[cfg(not(windows))]
 fn replace_all(binary: &[u8], paths: &[PathBuf]) -> Result<()> {
-    let originals: Vec<_> = paths
-        .iter()
-        .map(|path| fs::read(path))
-        .collect::<io::Result<_>>()?;
+    let originals: Vec<_> = paths.iter().map(fs::read).collect::<io::Result<_>>()?;
     for (index, path) in paths.iter().enumerate() {
         if let Err(error) = crate::atomic::write(path, binary) {
             let mut rollback_errors = Vec::new();

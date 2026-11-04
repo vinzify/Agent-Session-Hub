@@ -2,6 +2,12 @@ param([Parameter(Mandatory=$true)][string]$PlanPath,
       [Parameter(Mandatory=$true)][int]$AshParentId)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+function Get-AshHash([string]$FilePath) {
+    $stream = [System.IO.File]::OpenRead($FilePath)
+    $algorithm = [System.Security.Cryptography.SHA256]::Create()
+    try { return [System.BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-', '').ToLowerInvariant() }
+    finally { $stream.Dispose(); $algorithm.Dispose() }
+}
 $plan = Get-Content -LiteralPath $PlanPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $resolvedStage = [System.IO.Path]::GetFullPath([System.IO.Path]::GetDirectoryName($PlanPath))
 if ($resolvedStage -ne [System.IO.Path]::GetFullPath($plan.stage) -or
@@ -14,7 +20,7 @@ $succeeded = $false
 try {
     Wait-Process -Id $AshParentId -ErrorAction SilentlyContinue
     foreach ($item in $plan.files) {
-        if ((Get-FileHash -LiteralPath $item.destination -Algorithm SHA256).Hash.ToLowerInvariant() -ne $item.sha256) {
+        if ((Get-AshHash $item.destination) -ne $item.sha256) {
             throw "Launcher changed during update: $($item.destination). Rerun the installer."
         }
         $entry = [pscustomobject]@{
