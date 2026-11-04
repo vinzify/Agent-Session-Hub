@@ -27,3 +27,6 @@ tar = "0.4"
 
 [target.'cfg(windows)'.dependencies]
 zip = { version = "9.3", default-features = false, features = ["deflate-flate2"] }
+
+[dev-dependencies]
+zip = { version = "9.3", default-features = false, features = ["deflate-flate2"] }

@@ -161,6 +161,11 @@ fn extract_binary(bytes: &[u8]) -> Result<Vec<u8>> {
 
 #[cfg(windows)]
 fn extract_binary(bytes: &[u8]) -> Result<Vec<u8>> {
+    extract_zip_binary(bytes)
+}
+
+#[cfg(any(windows, test))]
+fn extract_zip_binary(bytes: &[u8]) -> Result<Vec<u8>> {
     let mut archive = zip::ZipArchive::new(io::Cursor::new(bytes))?;
     ensure!(archive.len() <= 1024, "too many archive entries");
     ensure!(
@@ -637,6 +642,24 @@ mod tests {
             std::os::unix::fs::symlink(&current, &changed).unwrap();
             assert!(record.validate(&current).is_err());
         }
+    }
+
+    #[test]
+    fn windows_zip_extraction_ignores_other_paths_and_requires_root_binary() {
+        for name in ["agent-session-hub.exe", "nested/agent-session-hub.exe"] {
+            let mut writer = zip::ZipWriter::new(io::Cursor::new(Vec::new()));
+            writer
+                .start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(b"test executable").unwrap();
+            let bytes = writer.finish().unwrap().into_inner();
+            if name == "agent-session-hub.exe" {
+                assert_eq!(extract_zip_binary(&bytes).unwrap(), b"test executable");
+            } else {
+                assert!(extract_zip_binary(&bytes).is_err());
+            }
+        }
+        assert!(extract_zip_binary(b"not a ZIP file").is_err());
     }
 
     #[cfg(windows)]
