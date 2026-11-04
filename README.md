@@ -63,8 +63,34 @@ your shell using the command printed by the installer.
 Ubuntu 22.04's packaged `fzf` 0.29 is supported. Interactive compatibility is
 checked in CI against fzf 0.29.0 and 0.67.0.
 
-Run the same installer to update. See [installation details](./docs/install.md)
-for source builds, supported platforms, and uninstall instructions.
+Existing users: run the installer once more and reload your shell to enable the
+new update commands. See [installation details](./docs/install.md) for source
+builds, supported platforms, and uninstall instructions.
+
+### Updates from the terminal
+
+```sh
+sessionhub version
+sessionhub check-update    # Check now, without installing anything
+sessionhub update          # Confirm, verify, and install the latest stable release
+```
+
+`csx`, `clx`, and `opx` accept these commands too. Interactive browsing checks for
+updates in the background at most once per day and shows a terminal notice when
+a newer stable release is known. It never installs updates automatically or
+interrupts a running coding session. Short picker visits may show the result on
+your next launch. Searching, previews, and non-interactive commands do not check.
+
+The updater verifies the archive's SHA-256 against the release's `SHA256SUMS`,
+replaces the installed binary/launcher copies, and leaves session data, aliases,
+and shell profiles alone. Windows uses a helper after the updater process exits;
+close other hub processes if Windows blocks replacement. Recovery is attempted
+if a launcher replacement fails. Source/package-manager builds should use their
+own installation method.
+
+Set `AGENT_SESSION_HUB_NO_UPDATE_CHECK=1` to disable automatic checks; explicit
+`check-update` still works. No GitHub account/token is required. Checks contact
+GitHub with the app version, not your conversations or project paths.
 
 ## Everyday use
 
@@ -195,6 +221,12 @@ OpenCode stores sessions in a shared SQLite database. Its displayed sizes are
 estimates of session payloads, not guaranteed disk space reclaimed by deletion.
 
 ## Performance and local data
+
+Alias files are not disposable caches. Invalid JSON, unsupported schema versions,
+or unknown alias fields now produce an error and are left untouched. Repair the
+file or restore a known-good backup; do not delete it if you need its aliases.
+Alias saves use flushed, same-directory atomic replacements to prevent truncated
+writes. Conversation logs are separate from this index.
 
 Codex and Claude session metadata is cached in your operating system's cache
 directory under `agent-session-hub`. Only new or changed logs are reparsed;

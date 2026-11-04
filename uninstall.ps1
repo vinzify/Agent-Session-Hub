@@ -30,7 +30,7 @@ if (Test-Path $exePath) {
     & $exePath uninstall-shell *> $null
 }
 
-foreach ($name in @('agent-session-hub.exe', 'csx.cmd', 'clx.cmd', 'opx.cmd', 'sessionhub.cmd')) {
+foreach ($name in @('agent-session-hub.exe', 'csx.cmd', 'clx.cmd', 'opx.cmd', 'sessionhub.cmd', '.agent-session-hub-install.json')) {
     $path = Join-Path $resolvedBinRoot $name
     if (Test-Path $path) {
         Remove-Item -LiteralPath $path -Force

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0
+
+- Added `version`, `check-update`, and confirmed `update [--yes]` commands through sessionhub/csx/clx/opx
+- Added cached daily background update notices for interactive browsing, with an opt-out and quiet offline fallback
+- Kept all network checks out of search/preview subprocesses and stdout selection protocols
+- Verified official release archives using published SHA-256 checksums and executable versions before replacing managed launcher copies
+- Added installation records for custom paths, source-build/symlink/mismatched-launcher guards, rollback, and post-exit Windows replacement
+- Published a single SHA256SUMS covering all platform archives/installers; installers now verify archive checksums too
+- Refreshed shell management-command routing and documented the one-time upgrade required by older installations
+- Required successful source-commit CI before publishing releases and pinned manual release builds to the requested tag
+
 ## 0.3.13
 
 - Fixed #7: corrupt primary/legacy alias indexes now fail clearly instead of becoming empty and being overwritten

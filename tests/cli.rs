@@ -79,6 +79,36 @@ fn corrupt_alias_index_blocks_mutations_without_touching_sessions_or_aliases() {
 }
 
 #[test]
+fn update_management_commands_do_not_prompt_for_a_provider_or_launch_the_picker() {
+    let temp = tempfile::tempdir().unwrap();
+    for args in [
+        vec!["version"],
+        vec!["--version"],
+        vec!["codex", "version"],
+        vec!["--provider", "claude", "update", "--help"],
+        vec!["check-update", "--help"],
+    ] {
+        let output = cli(temp.path(), &args);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("Select CLI"));
+        assert!(!output.stdout.is_empty());
+    }
+    let output = cli(temp.path(), &["update", "--unexpected"]);
+    assert!(!output.status.success());
+    let output = cli(temp.path(), &["update", "--yes"]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("not a recorded installer-managed installation")
+    );
+    assert!(!temp.path().join("cache/update-check.json").exists());
+}
+
+#[test]
 fn cached_queries_follow_file_changes_aliases_new_sessions_and_deletions() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();

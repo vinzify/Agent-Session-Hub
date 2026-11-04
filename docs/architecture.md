@@ -6,6 +6,9 @@ Agent Session Hub is a native Rust CLI that preserves the provider launchers `cs
 - `src/provider.rs`: provider metadata and launcher identity
 - `src/session.rs`: Codex and Claude JSONL parsing plus OpenCode SQLite parsing, git context, query filtering
 - `src/config.rs`: alias persistence and legacy index migration
+- `src/atomic.rs`: same-directory staged writes with flush and replacement
+- `src/update.rs`: stable-release checks, bounded verified downloads, managed-install detection, and launcher transactions
+- `src/update-windows.ps1`: post-exit replacement/rollback for Windows executable locks
 - `src/cache.rs`: disposable, incremental Codex and Claude metadata cache
 - `src/browser.rs`: `fzf` integration, row format, preview rendering
 - `src/shell.rs`: shell profile integration for bash, zsh, fish, PowerShell, and Windows `cmd`
@@ -67,6 +70,31 @@ uv run --with pexpect==4.9.0 --with pyte==0.8.2 python scripts/test-fzf-compat.p
 | `CODEX_SESSION_HUB_SESSION_ROOT` | Override the Codex sessions directory |
 | `CODEX_SESSION_HUB_CLAUDE_SESSION_ROOT` | Override Claude's projects directory; its parent is used for `history.jsonl` |
 | `CODEX_SESSION_HUB_OPENCODE_SESSION_ROOT` | Override the directory containing `opencode.db` |
+| `AGENT_SESSION_HUB_NO_UPDATE_CHECK=1` | Disable background release checks (explicit checks still work) |
+
+## Alias integrity and updates
+
+Alias indexes are durable user data: parse/read errors, unsupported versions, and
+unknown fields are rejected, not treated as empty. Both primary and legacy loaders
+preserve the original on failure. Saves revalidate any existing destination, stage
+beside it, preserve file permissions, flush, and atomically replace it. Valid legacy
+migration leaves the original legacy index intact.
+
+The updater only recognizes the installer-managed layout recorded in
+`installation.json` and the launcher directory's `.agent-session-hub-install.json`.
+It checks that the current executable belongs to that layout and that all binary
+copies still match before updating. Archives/checksums are pinned to the official
+GitHub release tag; response and extraction sizes are capped. Only the root
+executable is read from the archive; archive paths cannot choose installation targets.
+The downloaded executable's reported version must match the selected stable release.
+
+Background checks only originate from interactive browse/selection entrypoints.
+They cache an attempted check for 24 hours, use a short network timeout, and never
+write to the TSV stdout protocol. Search/preview subprocesses do not perform them.
+No downloaded code is executed by notification checks. Self-update is explicit
+and requires confirmation (or `--yes`). Session/alias files and shell profiles are
+outside the update write set. Windows replacement waits for the updater to exit;
+native Windows CI exercises successful replacement and rollback under a file lock.
 
 The default cache location is the OS cache directory under `agent-session-hub`
 (for example, `~/.cache/agent-session-hub` on Linux). It can be removed at any

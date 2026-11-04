@@ -9,6 +9,7 @@ if [ -x "${BIN_ROOT}/csx" ]; then
 fi
 
 rm -f "${BIN_ROOT}/csx" "${BIN_ROOT}/clx" "${BIN_ROOT}/opx" "${BIN_ROOT}/sessionhub"
+rm -f "${BIN_ROOT}/.agent-session-hub-install.json"
 rm -rf "${INSTALL_ROOT}"
 
 printf 'Removed Agent Session Hub from %s\n' "$INSTALL_ROOT"

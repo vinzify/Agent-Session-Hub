@@ -10,6 +10,7 @@ mod paths;
 mod provider;
 mod session;
 mod shell;
+mod update;
 
 use anyhow::Result;
 

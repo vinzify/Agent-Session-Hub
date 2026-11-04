@@ -13,9 +13,30 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+      - name: Validate version and cross-platform CI
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          python3 -c 'import os,tomllib; assert os.environ["RELEASE_TAG"] == "v" + tomllib.load(open("Cargo.toml","rb"))["package"]["version"]'
+          sha=$(git rev-parse HEAD)
+          test "$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$sha" --status success --json databaseId --jq 'length')" -gt 0
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: validate
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -45,7 +66,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          ref: ${{ needs.validate.outputs.sha }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -82,12 +103,12 @@ jobs:
           path: ${{ matrix.archive_name }}
 
   publish:
-    needs: build
+    needs: [validate, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          ref: ${{ needs.validate.outputs.sha }}
 
       - name: Download release assets
         uses: actions/download-artifact@v4
@@ -100,15 +121,21 @@ jobs:
           find release-assets -type f -maxdepth 2 -exec cp {} final-assets/ \;
           ls -l final-assets
 
+      - name: Hash release archives and installers
+        run: |
+          cp install.sh install.ps1 uninstall.sh uninstall.ps1 final-assets/
+          cd final-assets
+          sha256sum * > ../SHA256SUMS
+          mv ../SHA256SUMS SHA256SUMS
+
       - name: Publish GitHub release
+        # A single publisher hashes the complete platform set and installers.
+        # Consumers pin their archive and checksum file to the same release tag.
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           draft: false
           prerelease: false
+          generate_release_notes: true
           files: |
             final-assets/*
-            install.sh
-            install.ps1
-            uninstall.sh
-            uninstall.ps1

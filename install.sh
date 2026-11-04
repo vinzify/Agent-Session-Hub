@@ -60,6 +60,7 @@ download_release_binary() {
   target="$1"
   tmp_dir="$2"
   archive_path="${tmp_dir}/agent-session-hub.tar.gz"
+  archive_name="agent-session-hub-${target}.tar.gz"
   if [ "$VERSION" = "latest" ]; then
     url="https://github.com/${REPOSITORY}/releases/latest/download/agent-session-hub-${target}.tar.gz"
   else
@@ -69,6 +70,18 @@ download_release_binary() {
   require_cmd curl
   require_cmd tar
   curl -fsSL "$url" -o "$archive_path"
+  curl -fsSL "${url%/*}/SHA256SUMS" -o "${tmp_dir}/SHA256SUMS"
+  expected="$(awk -v name="$archive_name" '($2 == name || $2 == "*" name) {print $1; count++} END {if (count != 1) exit 1}' "${tmp_dir}/SHA256SUMS")"
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual="$(sha256sum "$archive_path" | awk '{print $1}')"
+  else
+    require_cmd shasum
+    actual="$(shasum -a 256 "$archive_path" | awk '{print $1}')"
+  fi
+  if [ "$actual" != "$expected" ]; then
+    echo 'Release checksum verification failed. Nothing was installed.' >&2
+    exit 1
+  fi
   tar -xzf "$archive_path" -C "$tmp_dir"
   find "$tmp_dir" -type f -name agent-session-hub | head -n 1
 }
@@ -140,6 +153,7 @@ main() {
   fi
 
   install_binary "$binary_path"
+  "${INSTALL_ROOT}/bin/agent-session-hub" __record-install "$INSTALL_ROOT" "$BIN_ROOT"
   run_shell_install
 
   printf 'Installed Agent Session Hub to %s\n' "$INSTALL_ROOT"

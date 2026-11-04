@@ -107,6 +107,7 @@ def main():
         session("scan-agent", scan, "Inspect the generated scan findings", now - 120, "scan-session")
 
         env = dict(os.environ, TERM="xterm-256color", SHELL="/bin/sh", FZF_DEFAULT_OPTS="",
+                   AGENT_SESSION_HUB_NO_UPDATE_CHECK="1",
                    CODEX_SESSION_HUB_SESSION_ROOT=str(sessions),
                    CODEX_SESSION_HUB_CONFIG_ROOT=str(root / "config"),
                    CODEX_SESSION_HUB_CACHE_ROOT=str(root / "cache"),

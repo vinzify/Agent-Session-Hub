@@ -107,6 +107,9 @@ fn generic_usage() -> Result<()> {
     println!("sessionhub <csx|clx|opx> [query]");
     println!("sessionhub install-shell");
     println!("sessionhub uninstall-shell");
+    println!("sessionhub version");
+    println!("sessionhub check-update");
+    println!("sessionhub update [--yes]");
     println!();
     generic_providers();
     println!();
@@ -170,6 +173,10 @@ pub fn run() -> Result<()> {
         .unwrap_or_else(|| "agent-session-hub".to_string());
     let mut args = argv.into_iter().skip(1).collect::<Vec<_>>();
 
+    if let Some(result) = crate::update::dispatch(&args) {
+        return result;
+    }
+
     if is_generic_entrypoint(&argv0) {
         return generic_dispatch(&args);
     }
@@ -189,6 +196,9 @@ pub fn run() -> Result<()> {
 }
 
 fn dispatch(provider: ProviderKind, args: &[String]) -> Result<()> {
+    if let Some(result) = crate::update::dispatch(args) {
+        return result;
+    }
     if args.is_empty() {
         return browse_command(provider, "");
     }
@@ -390,6 +400,7 @@ fn is_single_workspace_selection(selected_ids: &[String]) -> bool {
 }
 
 fn browse_command(provider: ProviderKind, query: &str) -> Result<()> {
+    let notice = crate::update::Notice::start();
     ensure_fzf()?;
     let exe = current_exe()?;
     let query = query.to_string();
@@ -423,6 +434,7 @@ fn browse_command(provider: ProviderKind, query: &str) -> Result<()> {
                         "Resume only supports one session at a time. Clear multi-select or choose a single row."
                     ));
                 }
+                drop(notice);
                 return resume_session(&connected_chat(&display, selected[0]).session);
             }
             "ctrl-a" => toggle_agents(&selected, &result.session_ids, &mut expanded_roots),
@@ -842,6 +854,7 @@ fn hidden_query(provider: ProviderKind, args: &[String]) -> Result<()> {
 }
 
 fn hidden_select(provider: ProviderKind, args: &[String]) -> Result<()> {
+    let _notice = crate::update::Notice::start();
     ensure_fzf()?;
     let exe = current_exe()?;
     let query = args.join(" ");
@@ -1044,6 +1057,10 @@ fn doctor_command(provider: ProviderKind) -> Result<()> {
 }
 
 fn usage(provider: ProviderKind) -> Result<()> {
+    println!(
+        "{} version | check-update | update [--yes]",
+        provider.launcher_name()
+    );
     println!("{} [query]", provider.launcher_name());
     println!("{} browse [query]", provider.launcher_name());
     println!(

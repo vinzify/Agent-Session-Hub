@@ -81,7 +81,7 @@ fn posix_function(name: &str, passthrough: &[&str]) -> String {
         r#"{name}() {{
   case "${{1-}}" in
 {passthrough_cases}
-    doctor|rename|reset|delete|cleanup|help|--help|-h|install-shell|uninstall-shell|__*)
+    doctor|rename|reset|delete|cleanup|version|--version|-V|check-update|update|help|--help|-h|install-shell|uninstall-shell|__*)
       command {name} "$@"
       return $?
       ;;
@@ -110,7 +110,7 @@ fn fish_function(name: &str) -> String {
     switch "$first"
         case browse
             set argv $argv[2..-1]
-        case doctor rename reset delete cleanup help --help -h install-shell uninstall-shell '__*'
+        case doctor rename reset delete cleanup help --help -h install-shell uninstall-shell version --version -V check-update update '__*'
             command {name} $argv
             return $status
     end
@@ -139,7 +139,7 @@ fn powershell_function(name: &str, provider: &str, exe: &str) -> String {
         $commandName = if ($args.Count -gt 0) {{ [string]$args[0] }} else {{ '' }}
     }}
 
-    if ($commandName -in @('doctor', 'rename', 'reset', 'delete', 'cleanup', 'help', '--help', '-h', 'install-shell', 'uninstall-shell') -or $commandName.StartsWith('__')) {{
+    if ($commandName -in @('doctor', 'rename', 'reset', 'delete', 'cleanup', 'version', '--version', '-V', 'check-update', 'update', 'help', '--help', '-h', 'install-shell', 'uninstall-shell') -or $commandName.StartsWith('__')) {{
         & '{exe}' --provider {provider} @args
         return
     }}
@@ -170,6 +170,11 @@ if /I \"%ASH_COMMAND%\"==\"browse\" (\r\n\
 )\r\n\
 \r\n\
 if /I \"%ASH_COMMAND%\"==\"doctor\" goto passthrough\r\n\
+if /I \"%ASH_COMMAND%\"==\"version\" goto passthrough\r\n\
+if /I \"%ASH_COMMAND%\"==\"--version\" goto passthrough\r\n\
+if /I \"%ASH_COMMAND%\"==\"-V\" goto passthrough\r\n\
+if /I \"%ASH_COMMAND%\"==\"check-update\" goto passthrough\r\n\
+if /I \"%ASH_COMMAND%\"==\"update\" goto passthrough\r\n\
 if /I \"%ASH_COMMAND%\"==\"rename\" goto passthrough\r\n\
 if /I \"%ASH_COMMAND%\"==\"reset\" goto passthrough\r\n\
 if /I \"%ASH_COMMAND%\"==\"delete\" goto passthrough\r\n\
@@ -316,6 +321,13 @@ mod tests {
         assert!(block.contains("--provider claude __select"));
         assert!(block.contains("--provider claude --resume"));
         assert!(block.contains("goto passthrough"));
+        for command in ["version", "--version", "check-update", "update"] {
+            assert!(block.contains(&format!("==\"{command}\" goto passthrough")));
+            assert!(
+                powershell_profile_block(Path::new("hub.exe")).contains(&format!("'{command}'"))
+            );
+            assert!(fish_function("csx").contains(command));
+        }
     }
 
     #[cfg(unix)]
@@ -349,5 +361,24 @@ mod tests {
         assert!(
             cmd_launcher_content("hub.exe", "codex").contains("==\"cleanup\" goto passthrough")
         );
+        for command in ["version", "--version", "check-update", "update"] {
+            let script = format!("{}\ncsx {command}\n", posix_function("csx", &["browse"]));
+            let output = std::process::Command::new("bash")
+                .args(["--noprofile", "--norc", "-c", &script])
+                .env(
+                    "PATH",
+                    std::env::join_paths(std::iter::once(temp.path().to_path_buf()).chain(
+                        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+                    ))
+                    .unwrap(),
+                )
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap(),
+                format!("{command}\n")
+            );
+        }
     }
 }

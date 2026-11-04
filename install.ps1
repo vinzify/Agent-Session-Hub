@@ -116,6 +116,17 @@ function Get-AshDownloadedBinary {
 
     $url = Get-AshReleaseUrl -Repository $Repository -Version $Version -Target $target
     Invoke-WebRequest -Uri $url -OutFile $archivePath
+    $checksumPath = Join-Path $tempRoot 'SHA256SUMS'
+    $checksumUrl = $url.Substring(0, $url.LastIndexOf('/') + 1) + 'SHA256SUMS'
+    Invoke-WebRequest -Uri $checksumUrl -OutFile $checksumPath
+    $archiveName = "agent-session-hub-$target.zip"
+    $pattern = '^[0-9a-fA-F]{64}\s+\*?' + [regex]::Escape($archiveName) + '$'
+    $sumLines = @(Get-Content -LiteralPath $checksumPath | Where-Object { $_ -match $pattern })
+    if ($sumLines.Count -ne 1) { throw 'Missing or ambiguous release checksum. Nothing was installed.' }
+    $expectedHash = ($sumLines[0] -split '\s+')[0]
+    if ((Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash -ne $expectedHash) {
+        throw 'Release checksum verification failed. Nothing was installed.'
+    }
     Expand-Archive -LiteralPath $archivePath -DestinationPath $extractRoot -Force
 
     $binary = Get-ChildItem -Path $extractRoot -Filter 'agent-session-hub.exe' -Recurse | Select-Object -First 1
@@ -172,6 +183,9 @@ try {
     }
 
     [void](Install-AshBinary -BinaryPath $binaryPath -ResolvedInstallRoot $resolvedInstallRoot -ResolvedBinRoot $resolvedBinRoot)
+
+    & (Join-Path $resolvedInstallRoot 'bin/agent-session-hub.exe') __record-install $resolvedInstallRoot $resolvedBinRoot
+    if ($LASTEXITCODE -ne 0) { throw 'Could not record the installation for future self-updates.' }
 
     if (-not $SkipShellIntegration) {
         & (Join-Path $resolvedInstallRoot 'bin/agent-session-hub.exe') install-shell
