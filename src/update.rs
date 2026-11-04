@@ -166,7 +166,8 @@ fn extract_binary(bytes: &[u8]) -> Result<Vec<u8>> {
     ensure!(
         archive
             .file_names()
-            .filter(|name| *name == "agent-session-hub.exe")
+            .filter_map(|name| name.ok())
+            .filter(|name| name.as_ref() == "agent-session-hub.exe")
             .count()
             == 1,
         "release archive has no unique root agent-session-hub.exe executable"

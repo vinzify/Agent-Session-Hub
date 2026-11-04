@@ -31,6 +31,13 @@ Public one-line installs pull from GitHub Releases.
 
 To publish a release:
 
+Wait for CI to pass on the exact source commit. The release workflow checks the
+tag/package version and source CI result, builds from that pinned commit, and
+publishes `SHA256SUMS` covering archives and installers. Keep the self-updater's
+four platform archive names stable. Binary `version` output and the tag must agree.
+Windows CI also exercises updater helper rollback with an executable-style file lock.
+
+
 1. Create and push a semver tag like `v0.1.0`
 2. Let `.github/workflows/release.yml` build and upload the release archives
 3. Verify the release contains:

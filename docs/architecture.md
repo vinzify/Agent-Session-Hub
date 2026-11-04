@@ -1,6 +1,6 @@
 # Architecture
 
-Agent Session Hub is a native Rust CLI that preserves the provider launchers `csx`, `clx`, `opx`, plus the generic `sessionhub` entrypoint without any PowerShell runtime dependency.
+Agent Session Hub is a native Rust CLI that preserves the provider launchers `csx`, `clx`, `opx`, plus the generic `sessionhub` entrypoint. Browsing does not require PowerShell; Windows installation and post-exit updating use PowerShell helpers.
 
 - `src/app.rs`: CLI dispatch, hidden helper commands, browser actions
 - `src/provider.rs`: provider metadata and launcher identity
