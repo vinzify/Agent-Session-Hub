@@ -5,7 +5,9 @@ Agent Session Hub is a native Rust CLI with provider launchers `csx`, `clx`, `op
 - `src/app.rs`: CLI dispatch, hidden helper commands, browser actions
 - `src/provider.rs`: provider metadata and launcher identity
 - `src/session.rs`: Codex and Claude JSONL parsing plus OpenCode SQLite parsing, git context, query filtering
-- `src/antigravity.rs`: read-only Antigravity CLI summary-index adapter and per-conversation storage accounting
+- `src/antigravity.rs`: read-only Antigravity browsing, per-conversation storage accounting, and scoped offline deletion/restoration
+- `src/local_store.rs`: idle-writer checks, bounded history paths, compressed recovery archives, quarantine/rollback, and Claude deletion
+- `src/cleanup.rs`: retention groups, Codex scan recognition, opt-in old-chat cleanup, and descendant protection
 - `src/config.rs`: alias persistence and legacy index migration
 - `src/atomic.rs`: same-directory staged writes with flush and replacement
 - `src/update.rs`: stable-release checks, bounded verified downloads, managed-install detection, and launcher transactions
@@ -47,6 +49,20 @@ owner-only permissions and files are created privately. The cache stores paths,
 identifiers, timestamps, short text previews, and agent lineage, not full
 conversation transcripts.
 
+Agent lineage is resolved from each provider's recorded metadata. Claude uses
+`<root>/subagents/**/agent-*.jsonl` paths and optional `parentAgentId` sidecars;
+agent IDs are path-scoped because their transcripts can reuse the root session
+ID. Sidecar changes invalidate cached lineage. OpenCode uses `session.parent_id`
+when available. Antigravity requires positive nesting depth as well as a parent,
+so ordinary forks remain independent. Missing parents stay orphaned; cycles and
+unreasonably deep chains fall back to standalone rows. Only Codex paths are
+eligible for security-scan grouping.
+OpenCode archived sessions remain hidden, and ancestors of those hidden rows are
+not deletable through the hub, avoiding invisible native cascade targets.
+An alternate OpenCode root is browse-only unless it resolves to the default
+native store; the hub never forwards its private root override as if it were
+understood by OpenCode.
+
 Workspace and conversation ordering uses last activity with deterministic
 tie-breaks. The browser indexes all sessions by group once per render so it does
 not rescan the entire history for every workspace.
@@ -77,7 +93,7 @@ uv run --with pexpect==4.9.0 --with pyte==0.8.2 python scripts/test-fzf-compat.p
 
 | Environment variable | Purpose |
 | --- | --- |
-| `CODEX_SESSION_HUB_CONFIG_ROOT` | Override the directory containing alias indexes |
+| `CODEX_SESSION_HUB_CONFIG_ROOT` | Override the directory containing alias indexes and recovery backups |
 | `CODEX_SESSION_HUB_CACHE_ROOT` | Override the disposable metadata cache directory |
 | `CODEX_SESSION_HUB_DISABLE_CACHE=1` | Bypass cache reads and writes |
 | `CODEX_SESSION_HUB_SESSION_ROOT` | Override the Codex sessions directory |
@@ -85,6 +101,44 @@ uv run --with pexpect==4.9.0 --with pyte==0.8.2 python scripts/test-fzf-compat.p
 | `CODEX_SESSION_HUB_OPENCODE_SESSION_ROOT` | Override the directory containing `opencode.db` |
 | `CODEX_SESSION_HUB_ANTIGRAVITY_SESSION_ROOT` | Override Antigravity CLI's store containing `conversation_summaries.db` and `conversations/` |
 | `AGENT_SESSION_HUB_NO_UPDATE_CHECK=1` | Disable background release checks (explicit checks still work) |
+
+## Offline history deletion and recovery
+
+Claude and Antigravity use a shared recovery layer; existing Codex filesystem
+deletion and OpenCode native CLI deletion retain their separate behavior.
+The new adapters require idle native producers, inspected using `ps` on Unix or
+CIM on Windows without printing potentially sensitive command lines. This is a
+conservative process check, not a cross-application lock: users must close the
+provider and background workers before deletion or restoration.
+
+Selected regular files must stay inside the canonical provider root, with no
+symlinks in child paths. Their lengths, mtimes and SHA-256 hashes are checked
+before moving them to same-filesystem quarantine. A durable, private
+`recovery/<provider>/backup-*/` directory holds `history.tar.gz` and a versioned
+manifest with selected aliases and relevant native metadata. Errors trigger
+rollback; interrupted/prepared backups remain available for recovery. Compression
+and native SQLite overhead mean displayed session sizes are not a promise of
+disk space reclaimed. Backups have no automatic expiry; only explicit purge
+removes them.
+
+Claude follows the transcript plus owned session-subtree layout and includes
+sidecars when deleting selected agents. Antigravity treats conversation step
+databases as opaque files. It validates known index tables, acquires an immediate
+SQLite transaction, rechecks the selection and child dependencies, and changes
+only matching summary/FTS rows and entries in the two known conversation caches.
+Cache replacements compare the original bytes and refuse concurrent changes.
+Unknown schemas, busy databases, malformed caches, selected cloud records, or
+detected writers fail closed. No undocumented Antigravity RPC is used.
+
+Restore requires the original configured root, validates archive paths, entry
+types, lengths and hashes before extraction, and never overwrites differing
+files, rows, cache keys, or aliases. Identical existing history permits a repeated
+restore. Antigravity restoration merges selected records rather than replacing
+the whole summary database or cache, preserving newer unrelated history.
+Newly created files are rolled back if restoration fails. Recovery backups remain
+after a successful restore. They contain private conversation data and should
+not be committed or shared. Project files, separate IDE/cloud originals, global
+prompt history, and unrelated artifacts are not deletion targets.
 
 ## Alias integrity and updates
 

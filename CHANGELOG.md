@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.0
+
+- Added confirmed, recoverable local CLI history deletion for Claude Code and Antigravity, with offline-writer checks, scoped changes, private compressed backups, and explicit recovery list/restore/purge commands
+- Added Claude subagent sidecars, OpenCode parent IDs, and Antigravity subagent metadata to connected agent trees; ordinary Antigravity forks remain independent chats
+- Enabled agent/orphan cleanup across all providers and explicit `--chats` opt-in cleanup (90 days by default), protecting newer or undeletable descendants from cascading deletion
+- Protected OpenCode families with hidden archived descendants and kept alternate OpenCode stores browse-only to prevent native deletion from targeting a different database
+- Indexed cleanup families and cascade protection once, avoiding repeated whole-history scans per agent
+- Kept Codex scan grouping provider-specific and clarified transcript/payload sizes versus disk space actually reclaimed
+- Added fixture-based deletion/recovery and refusal regressions; documented local-only scope, provider-specific limits, and recovery storage management
+
 ## 0.5.1
 
 - Automatically create missing provider shortcuts in installer-managed installations, using the recorded custom launcher directory

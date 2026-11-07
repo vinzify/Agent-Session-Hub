@@ -11,6 +11,7 @@ pub enum CleanupKind {
     SecurityScan,
     LinkedAgents,
     OrphanAgents,
+    Chats,
 }
 
 impl CleanupKind {
@@ -19,6 +20,7 @@ impl CleanupKind {
             Self::SecurityScan => "Security scan",
             Self::LinkedAgents => "Chat agents",
             Self::OrphanAgents => "Orphan agents",
+            Self::Chats => "Old chats",
         }
     }
 }
@@ -31,6 +33,8 @@ pub struct CleanupPolicy {
     pub include_security_scans: bool,
     pub include_linked_agents: bool,
     pub include_orphan_agents: bool,
+    pub include_chats: bool,
+    pub chat_age: Duration,
 }
 
 impl Default for CleanupPolicy {
@@ -42,6 +46,8 @@ impl Default for CleanupPolicy {
             include_security_scans: true,
             include_linked_agents: true,
             include_orphan_agents: true,
+            include_chats: false,
+            chat_age: Duration::days(90),
         }
     }
 }
@@ -74,6 +80,9 @@ fn group_from_sessions(
     detail: String,
     sessions: &[&SessionRecord],
 ) -> Option<CleanupGroup> {
+    if sessions.iter().any(|s| !s.supports_delete) {
+        return None;
+    }
     let latest_updated = sessions.iter().map(|session| session.last_updated).max()?;
     Some(CleanupGroup {
         key,
@@ -98,7 +107,9 @@ pub fn cleanup_groups(
     let mut scan_sessions = BTreeMap::<String, Vec<&SessionRecord>>::new();
     let mut scan_ids = HashSet::new();
     for session in sessions {
-        if let Some(scan) = security_scan_identity(&session.project_path) {
+        if session.provider == crate::provider::ProviderKind::Codex
+            && let Some(scan) = security_scan_identity(&session.project_path)
+        {
             scan_ids.insert(session.session_id.clone());
             scan_sessions.entry(scan.key).or_default().push(session);
         }
@@ -139,11 +150,71 @@ pub fn cleanup_groups(
         .collect::<HashMap<_, _>>();
     let mut linked_agents = BTreeMap::<String, Vec<&SessionRecord>>::new();
     let mut orphan_agents = BTreeMap::<String, Vec<&SessionRecord>>::new();
-
-    for session in sessions
+    let parents = sessions
         .iter()
-        .filter(|session| session.is_agent && !scan_ids.contains(&session.session_id))
-    {
+        .map(|s| (s.session_id.as_str(), s.parent_session_id.as_str()))
+        .collect::<HashMap<_, _>>();
+    // Index families and propagate cascade protection once. Avoid scanning the
+    // entire history for every root and every candidate agent.
+    let mut families = HashMap::<&str, Vec<&SessionRecord>>::new();
+    let mut protected_ancestors = HashSet::new();
+    for s in sessions {
+        let root_id = if s.is_agent {
+            s.root_session_id.as_str()
+        } else {
+            s.session_id.as_str()
+        };
+        families.entry(root_id).or_default().push(s);
+        let age = if roots.contains_key(root_id) {
+            policy.linked_agent_age
+        } else {
+            policy.orphan_agent_age
+        };
+        if s.provider == crate::provider::ProviderKind::Codex
+            || (s.supports_delete && is_old_enough(s.last_updated, age, now))
+        {
+            continue;
+        }
+        let mut parent = s.parent_session_id.as_str();
+        let mut seen = HashSet::new();
+        while !parent.is_empty() && seen.insert(parent) {
+            protected_ancestors.insert(parent);
+            parent = parents.get(parent).copied().unwrap_or("");
+        }
+    }
+    let mut chat_ids = HashSet::new();
+    if policy.include_chats {
+        for root in roots
+            .values()
+            .filter(|root| !scan_ids.contains(&root.session_id))
+        {
+            let items = &families[root.session_id.as_str()];
+            if items
+                .iter()
+                .all(|s| is_old_enough(s.last_updated, policy.chat_age, now))
+            {
+                if let Some(group) = group_from_sessions(
+                    format!("chat:{}", root.session_id),
+                    CleanupKind::Chats,
+                    root.display_title.clone(),
+                    root.workspace_label.clone(),
+                    items,
+                ) {
+                    chat_ids.extend(group.session_ids.iter().cloned());
+                    groups.push(group);
+                }
+            }
+        }
+    }
+
+    for session in sessions.iter().filter(|session| {
+        session.is_agent
+            && !scan_ids.contains(&session.session_id)
+            && !chat_ids.contains(&session.session_id)
+    }) {
+        if !session.supports_delete || protected_ancestors.contains(session.session_id.as_str()) {
+            continue;
+        }
         if roots.contains_key(session.root_session_id.as_str()) {
             if policy.include_linked_agents
                 && is_old_enough(session.last_updated, policy.linked_agent_age, now)
@@ -309,6 +380,7 @@ mod tests {
             workspace_key: format!("{path}|main"),
             workspace_label: "project @ main".to_string(),
             file_path: PathBuf::from(format!("/tmp/{id}.jsonl")),
+            file_modified: None,
             project_exists: false,
             alias: String::new(),
             preview: "preview".to_string(),
@@ -386,5 +458,71 @@ mod tests {
             .find(|group| group.kind == CleanupKind::OrphanAgents)
             .expect("orphan agents group");
         assert_eq!(orphaned.session_ids, vec!["orphan"]);
+    }
+
+    #[test]
+    fn normal_chats_require_opt_in_and_the_whole_family_must_be_old_and_deletable() {
+        let now = Local::now();
+        let mut sessions = vec![
+            session("root", "/work/project", Duration::days(120)),
+            agent("child", "root", "/work/project", Duration::days(100)),
+        ];
+        assert!(
+            cleanup_groups(&sessions, &CleanupPolicy::default(), now)
+                .iter()
+                .all(|g| g.kind != CleanupKind::Chats)
+        );
+        let policy = CleanupPolicy {
+            include_chats: true,
+            ..CleanupPolicy::default()
+        };
+        let groups = cleanup_groups(&sessions, &policy, now);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].kind, CleanupKind::Chats);
+        assert_eq!(groups[0].session_ids.len(), 2);
+        sessions[1].last_updated = now - Duration::days(1);
+        assert!(cleanup_groups(&sessions, &policy, now).is_empty());
+        sessions[1].last_updated = now - Duration::days(100);
+        sessions[1].supports_delete = false;
+        assert!(cleanup_groups(&sessions, &policy, now).is_empty());
+    }
+
+    #[test]
+    fn native_cascades_cannot_remove_young_or_active_descendants() {
+        let now = Local::now();
+        for provider in [
+            ProviderKind::Claude,
+            ProviderKind::Opencode,
+            ProviderKind::Antigravity,
+        ] {
+            let mut sessions = vec![
+                session("root", "/work/project", Duration::days(120)),
+                agent("parent", "root", "/work/project", Duration::days(60)),
+                agent("child", "root", "/work/project", Duration::days(1)),
+            ];
+            for s in &mut sessions {
+                s.provider = provider;
+            }
+            sessions[2].parent_session_id = "parent".into();
+            assert!(cleanup_groups(&sessions, &CleanupPolicy::default(), now).is_empty());
+            sessions[2].last_updated = now - Duration::days(60);
+            sessions[2].supports_delete = false;
+            assert!(cleanup_groups(&sessions, &CleanupPolicy::default(), now).is_empty());
+            sessions[2].supports_delete = true;
+            let groups = cleanup_groups(&sessions, &CleanupPolicy::default(), now);
+            assert_eq!(groups.len(), 1);
+            assert_eq!(groups[0].session_ids.len(), 2);
+        }
+    }
+
+    #[test]
+    fn codex_scan_paths_do_not_reclassify_other_providers_chats() {
+        let mut root = session(
+            "root",
+            "/tmp/codex-security-scans-test/repo/run/output",
+            Duration::days(100),
+        );
+        root.provider = ProviderKind::Claude;
+        assert!(cleanup_groups(&[root], &CleanupPolicy::default(), Local::now()).is_empty());
     }
 }

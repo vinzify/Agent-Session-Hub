@@ -7,6 +7,7 @@ mod cleanup;
 mod config;
 mod formatting;
 mod git;
+mod local_store;
 mod paths;
 mod provider;
 mod session;

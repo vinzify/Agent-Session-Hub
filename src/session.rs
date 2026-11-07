@@ -38,6 +38,7 @@ pub struct SessionRecord {
     pub workspace_key: String,
     pub workspace_label: String,
     pub file_path: PathBuf,
+    pub file_modified: Option<std::time::SystemTime>,
     pub project_exists: bool,
     pub alias: String,
     pub preview: String,
@@ -73,6 +74,8 @@ pub(crate) struct SessionMetadata {
     recorded_detached_head: bool,
     slug: String,
     codex_lineage: Option<Value>,
+    #[serde(default)]
+    claude_lineage: Option<Value>,
 }
 
 impl SessionMetadata {
@@ -101,6 +104,20 @@ impl SessionMetadata {
         );
         if let Some(lineage) = self.codex_lineage {
             apply_codex_lineage(&mut session, &lineage);
+        }
+        if let Some(lineage) = self.claude_lineage {
+            session.is_agent = true;
+            session.root_session_id = strv(&lineage, "root");
+            let parent = strv(&lineage, "parent_agent");
+            session.parent_session_id = if parent.is_empty() {
+                session.root_session_id.clone()
+            } else {
+                format!("@agent:{parent}")
+            };
+            session.agent_depth = 1;
+            session.agent_path = strv(&lineage, "path");
+            session.agent_nickname = strv(&lineage, "name");
+            session.slug = strv(&lineage, "agent_id");
         }
         session
     }
@@ -140,7 +157,9 @@ pub fn security_scan_identity(project_path: &str) -> Option<SecurityScanIdentity
 }
 
 fn session_group_key(session: &SessionRecord) -> String {
-    if let Some(scan) = security_scan_identity(&session.project_path) {
+    if session.provider == ProviderKind::Codex
+        && let Some(scan) = security_scan_identity(&session.project_path)
+    {
         return format!("security-scan:{}", scan.key);
     }
     if session.workspace_key.trim().is_empty() {
@@ -288,13 +307,10 @@ fn new_session_record(
     } else {
         format!("{} session {}", provider.display_name(), session_id)
     };
-    let storage_bytes = if provider == ProviderKind::Opencode {
-        0
-    } else {
-        fs::metadata(&file_path)
-            .map(|metadata| metadata.len())
-            .unwrap_or(0)
-    };
+    let file_metadata = (provider != ProviderKind::Opencode)
+        .then(|| fs::metadata(&file_path).ok())
+        .flatten();
+    let storage_bytes = file_metadata.as_ref().map_or(0, |m| m.len());
 
     let root_session_id = session_id.clone();
     SessionRecord {
@@ -323,6 +339,7 @@ fn new_session_record(
             &normalized_project_path,
             &git_context.repo_root,
         ),
+        file_modified: file_metadata.and_then(|m| m.modified().ok()),
         file_path,
         project_exists: !normalized_project_path.is_empty()
             && Path::new(&normalized_project_path).exists(),
@@ -435,6 +452,7 @@ fn read_codex_session_file(file_path: &Path) -> Result<Option<SessionMetadata>> 
         recorded_branch_name,
         slug: String::new(),
         codex_lineage: lineage,
+        claude_lineage: None,
     }))
 }
 
@@ -582,6 +600,37 @@ fn read_claude_session_file(
     let timestamp = timestamp.unwrap_or(last_modified);
     let last_updated = last_updated.unwrap_or(last_modified);
 
+    let mut claude_lineage = None;
+    if let Some(agent) = file_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .and_then(|s| s.strip_prefix("agent-"))
+        && crate::local_store::valid_component(agent)
+        && let Some(base) = file_path
+            .ancestors()
+            .find(|p| p.file_name().is_some_and(|n| n == "subagents"))
+        && let Some(root) = base
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|s| s.to_str())
+        && crate::local_store::valid_component(root)
+    {
+        let relative = file_path
+            .strip_prefix(base)?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let sidecar = file_path.with_extension("meta.json");
+        let meta = fs::symlink_metadata(&sidecar)
+            .ok()
+            .filter(|m| m.is_file())
+            .and_then(|_| fs::read(sidecar).ok())
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .unwrap_or(Value::Null);
+        claude_lineage = Some(
+            serde_json::json!({"root":root,"parent_agent":strv(&meta,"parentAgentId"),"path":relative,"name":agent,"agent_id":agent}),
+        );
+        session_id = format!("{root}:agent:{relative}");
+    }
     Ok(Some(SessionMetadata {
         session_id,
         timestamp,
@@ -592,6 +641,7 @@ fn read_claude_session_file(
         recorded_detached_head,
         slug,
         codex_lineage: None,
+        claude_lineage,
     }))
 }
 
@@ -677,12 +727,21 @@ fn load_opencode_sessions_from_db(
     db_path: &Path,
     index: &AliasIndex,
 ) -> Result<Vec<SessionRecord>> {
-    let conn = Connection::open(db_path).with_context(|| format!("open {}", db_path.display()))?;
+    let conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| format!("open {}", db_path.display()))?;
     let previews = opencode_preview_index(&conn)?;
     let storage_sizes = opencode_storage_sizes(&conn)?;
-    let mut statement = conn.prepare(
-        "select s.id, s.slug, s.directory, s.title, s.time_created, s.time_updated, w.branch from session s left join workspace w on w.id = s.workspace_id where s.time_archived is null order by s.time_updated desc",
-    )?;
+    let has_parent = crate::antigravity::table_columns(&conn, "session")?
+        .iter()
+        .any(|c| c == "parent_id");
+    let parent = if has_parent {
+        "coalesce(s.parent_id,'')"
+    } else {
+        "''"
+    };
+    let mut statement = conn.prepare(&format!(
+        "select s.id, s.slug, s.directory, s.title, s.time_created, s.time_updated, w.branch, {parent} from session s left join workspace w on w.id = s.workspace_id where s.time_archived is null order by s.time_updated desc",
+    ))?;
     let rows = statement.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -692,13 +751,14 @@ fn load_opencode_sessions_from_db(
             row.get::<_, i64>(4)?,
             row.get::<_, i64>(5)?,
             row.get::<_, Option<String>>(6)?,
+            row.get::<_, String>(7)?,
         ))
     })?;
 
     let mut git_cache = HashMap::new();
     let mut sessions = Vec::new();
     for row in rows {
-        let (session_id, slug, directory, title, created_at, updated_at, branch) = row?;
+        let (session_id, slug, directory, title, created_at, updated_at, branch, parent) = row?;
         let recorded_detached_head = branch.as_deref() == Some("HEAD");
         let recorded_branch_name = if recorded_detached_head {
             String::new()
@@ -723,7 +783,7 @@ fn load_opencode_sessions_from_db(
             db_path.to_path_buf(),
             recorded_branch_name,
             recorded_detached_head,
-            title,
+            title.clone(),
             slug,
             &mut git_cache,
         );
@@ -733,7 +793,49 @@ fn load_opencode_sessions_from_db(
             + session.project_path.len() as u64
             + session.display_title.len() as u64
             + session.branch_display.len() as u64;
+        if !parent.is_empty() && parent != session.session_id {
+            session.is_agent = true;
+            session.parent_session_id = parent;
+            session.agent_nickname = title;
+        }
         sessions.push(session);
+    }
+
+    if has_parent {
+        // Archived rows are intentionally absent from the picker. Do not let a
+        // native cascading delete silently remove hidden descendants as well.
+        let mut statement =
+            conn.prepare("SELECT id,coalesce(parent_id,''),time_archived FROM session")?;
+        let all = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let parents = all
+            .iter()
+            .map(|(id, parent, _)| (id.as_str(), parent.as_str()))
+            .collect::<HashMap<_, _>>();
+        let mut protected = HashSet::new();
+        for (_, parent, archived) in &all {
+            if archived.is_none() {
+                continue;
+            }
+            let mut parent = parent.as_str();
+            let mut seen = HashSet::new();
+            while !parent.is_empty() && seen.insert(parent) {
+                protected.insert(parent);
+                parent = parents.get(parent).copied().unwrap_or("");
+            }
+        }
+        for s in &mut sessions {
+            if protected.contains(s.session_id.as_str()) {
+                s.supports_delete = false;
+            }
+        }
     }
 
     sessions.sort_by(|left, right| {
@@ -743,7 +845,7 @@ fn load_opencode_sessions_from_db(
             .then_with(|| left.project_path.cmp(&right.project_path))
             .then_with(|| left.session_id.cmp(&right.session_id))
     });
-    Ok(sessions)
+    Ok(resolve_lineage(sessions))
 }
 
 fn load_opencode_sessions(index: &AliasIndex) -> Result<Vec<SessionRecord>> {
@@ -752,14 +854,27 @@ fn load_opencode_sessions(index: &AliasIndex) -> Result<Vec<SessionRecord>> {
     if !db_path.exists() {
         return Ok(Vec::new());
     }
-    load_opencode_sessions_from_db(&db_path, index)
+    let mut sessions = load_opencode_sessions_from_db(&db_path, index)?;
+    if Some(session_root.canonicalize()?)
+        != ProviderKind::Opencode
+            .default_session_root()
+            .canonicalize()
+            .ok()
+    {
+        // The native CLI does not understand the hub's session-root override.
+        // An alternate database is browse-only, never a native delete target.
+        for session in &mut sessions {
+            session.supports_delete = false;
+        }
+    }
+    Ok(sessions)
 }
 
 pub fn load_sessions(provider: ProviderKind, index: &AliasIndex) -> Result<Vec<SessionRecord>> {
     if provider == ProviderKind::Antigravity {
         let mut git_cache = HashMap::new();
         return crate::antigravity::load(&provider_session_root(provider)).map(|conversations| {
-            conversations
+            let sessions = conversations
                 .into_iter()
                 .map(|conversation| {
                     let alias = index.get_alias(provider, &conversation.id);
@@ -779,9 +894,20 @@ pub fn load_sessions(provider: ProviderKind, index: &AliasIndex) -> Result<Vec<S
                         &mut git_cache,
                     );
                     session.storage_bytes = conversation.storage_bytes;
+                    session.supports_delete = !conversation.active;
+                    if conversation.depth > 0
+                        && crate::antigravity::valid_id(&conversation.parent)
+                        && conversation.parent != session.session_id
+                    {
+                        session.is_agent = true;
+                        session.parent_session_id = conversation.parent;
+                        session.agent_depth = conversation.depth;
+                        session.agent_nickname = conversation.agent_name;
+                    }
                     session
                 })
-                .collect()
+                .collect();
+            resolve_lineage(sessions)
         });
     }
     if provider == ProviderKind::Opencode {
@@ -856,7 +982,64 @@ pub fn load_sessions(provider: ProviderKind, index: &AliasIndex) -> Result<Vec<S
             .then_with(|| left.project_path.cmp(&right.project_path))
             .then_with(|| left.session_id.cmp(&right.session_id))
     });
-    Ok(sessions)
+    Ok(resolve_lineage(sessions))
+}
+
+fn resolve_lineage(mut sessions: Vec<SessionRecord>) -> Vec<SessionRecord> {
+    let mut agents = HashMap::<(String, String), Option<String>>::new();
+    for session in sessions
+        .iter()
+        .filter(|s| s.provider == ProviderKind::Claude && s.is_agent)
+    {
+        agents
+            .entry((session.root_session_id.clone(), session.slug.clone()))
+            .and_modify(|id| *id = None)
+            .or_insert(Some(session.session_id.clone()));
+    }
+    for s in &mut sessions {
+        if s.provider == ProviderKind::Claude
+            && let Some(agent) = s.parent_session_id.strip_prefix("@agent:")
+        {
+            s.parent_session_id = agents
+                .get(&(s.root_session_id.clone(), agent.to_string()))
+                .and_then(Clone::clone)
+                .unwrap_or_else(|| s.root_session_id.clone());
+        }
+    }
+    let parents = sessions
+        .iter()
+        .map(|s| {
+            (
+                (s.provider, s.session_id.clone()),
+                s.parent_session_id.clone(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    for s in &mut sessions {
+        if !s.is_agent || s.provider == ProviderKind::Codex {
+            continue;
+        }
+        let mut visited = HashSet::from([s.session_id.clone()]);
+        let mut parent = s.parent_session_id.clone();
+        let mut depth = 0;
+        while !parent.is_empty() {
+            if visited.len() > 256 || !visited.insert(parent.clone()) {
+                s.is_agent = false;
+                s.parent_session_id.clear();
+                s.root_session_id = s.session_id.clone();
+                depth = 0;
+                break;
+            }
+            depth += 1;
+            s.root_session_id = parent.clone();
+            parent = parents
+                .get(&(s.provider, parent))
+                .cloned()
+                .unwrap_or_default();
+        }
+        s.agent_depth = depth;
+    }
+    sessions
 }
 
 pub fn display_sessions(sessions: &[SessionRecord]) -> Vec<DisplaySession> {
@@ -918,7 +1101,8 @@ pub fn display_sessions(sessions: &[SessionRecord]) -> Vec<DisplaySession> {
     let mut conversation_number = 0;
     for (_, group_key, _, _, items) in ordered_projects {
         for session in items {
-            let is_generated_scan = security_scan_identity(&session.project_path).is_some();
+            let is_generated_scan = session.provider == ProviderKind::Codex
+                && security_scan_identity(&session.project_path).is_some();
             if !session.is_agent && !is_generated_scan {
                 conversation_number += 1;
             }
@@ -1131,6 +1315,7 @@ mod tests {
             workspace_key: format!("{name}|main"),
             workspace_label: format!("{name} @ main"),
             file_path: PathBuf::from(format!("/tmp/{name}.jsonl")),
+            file_modified: None,
             project_exists: false,
             alias: String::new(),
             preview: "preview text".to_string(),
@@ -1172,6 +1357,28 @@ mod tests {
         assert_eq!(session.agent_depth, 2);
         assert_eq!(session.agent_path, "/root/review/security");
         assert_eq!(session.agent_nickname, "Halley");
+    }
+
+    #[test]
+    fn malformed_lineage_cannot_loop_and_missing_parents_remain_orphans() {
+        let mut first = sample_session("alpha", 1);
+        first.provider = ProviderKind::Opencode;
+        first.is_agent = true;
+        first.parent_session_id = "session-2".into();
+        let mut second = sample_session("alpha", 2);
+        second.provider = ProviderKind::Opencode;
+        second.is_agent = true;
+        second.parent_session_id = "session-1".into();
+        let mut orphan = sample_session("alpha", 3);
+        orphan.provider = ProviderKind::Opencode;
+        orphan.is_agent = true;
+        orphan.parent_session_id = "missing-root".into();
+        let sessions = resolve_lineage(vec![first, second, orphan]);
+        assert!(!sessions[0].is_agent && !sessions[1].is_agent);
+        assert_eq!(sessions[0].root_session_id, sessions[0].session_id);
+        assert!(sessions[2].is_agent);
+        assert_eq!(sessions[2].root_session_id, "missing-root");
+        assert_eq!(sessions[2].agent_depth, 1);
     }
 
     #[test]
@@ -1389,5 +1596,20 @@ mod tests {
         assert_eq!(session.branch_display, "main");
         assert!(session.storage_bytes > 0);
         assert!(session.storage_size_is_estimate);
+        conn.execute_batch("ALTER TABLE session ADD COLUMN parent_id TEXT;
+            INSERT INTO session (id,slug,directory,title,time_created,time_updated,workspace_id,parent_id)
+            SELECT 'child','child-agent',directory,'Agent work',time_created,time_updated+1,workspace_id,'ses_123' FROM session WHERE id='ses_123'").unwrap();
+        let sessions = load_opencode_sessions_from_db(&db_path, &AliasIndex::default()).unwrap();
+        let child = sessions.iter().find(|s| s.session_id == "child").unwrap();
+        assert!(child.is_agent);
+        assert_eq!(child.root_session_id, "ses_123");
+        assert_eq!(child.agent_depth, 1);
+        let display = display_sessions(&sessions);
+        assert_eq!(display[0].group_key, display[1].group_key);
+        conn.execute_batch("INSERT INTO session (id,slug,directory,title,time_created,time_updated,time_archived,workspace_id,parent_id)
+            SELECT 'archived','archived-agent',directory,'Archived agent',time_created,time_updated,1,workspace_id,'child' FROM session WHERE id='ses_123'").unwrap();
+        let sessions = load_opencode_sessions_from_db(&db_path, &AliasIndex::default()).unwrap();
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions.iter().all(|s| !s.supports_delete));
     }
 }

@@ -920,6 +920,14 @@ pub fn confirm_delete(sessions: &[SessionRecord]) -> Result<bool> {
     if sessions.len() > 2 {
         eprintln!("  - ... and {} more", sessions.len() - 2);
     }
+    if sessions
+        .iter()
+        .any(|s| matches!(s.provider, ProviderKind::Claude | ProviderKind::Antigravity))
+    {
+        eprintln!(
+            "Local CLI history only. Close the provider first; a compressed recovery backup will remain until explicitly purged."
+        );
+    }
     eprint!("Confirm delete? [y/N] ");
     io::stderr().flush()?;
     let mut input = String::new();

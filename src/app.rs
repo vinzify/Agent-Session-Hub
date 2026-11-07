@@ -17,7 +17,7 @@ use chrono::{Duration, Local};
 use std::collections::{BTreeSet, HashSet};
 use std::env;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::process::Command;
 
 fn normalized_argv0(argv0: &str) -> String {
@@ -218,6 +218,7 @@ fn dispatch(provider: ProviderKind, args: &[String]) -> Result<()> {
         "reset" => reset_command(provider, &args[1..]),
         "delete" => delete_command(provider, &args[1..]),
         "cleanup" => cleanup_command(provider, &args[1..]),
+        "recovery" => recovery_command(provider, &args[1..]),
         "doctor" => doctor_command(provider),
         "install-shell" => install_shell_command(provider),
         "uninstall-shell" => uninstall_shell_command(provider),
@@ -246,6 +247,17 @@ fn delete_session(
     session: &crate::session::SessionRecord,
     index: &mut AliasIndex,
 ) -> Result<()> {
+    if provider == ProviderKind::Opencode {
+        anyhow::ensure!(
+            Some(crate::paths::provider_session_root(provider).canonicalize()?)
+                == provider.default_session_root().canonicalize().ok(),
+            "OpenCode deletion through its native CLI requires the default store; alternate hub session roots are browse-only"
+        );
+    }
+    anyhow::ensure!(
+        session.supports_delete,
+        "session is not eligible for hub deletion (active, alternate store, or hidden archived descendants); manage it through the provider's own history controls"
+    );
     match provider {
         ProviderKind::Codex => {
             fs::remove_file(&session.file_path)
@@ -258,7 +270,9 @@ fn delete_session(
             ));
         }
         ProviderKind::Opencode => {
-            let status = Command::new("opencode")
+            let binary =
+                which::which(provider.binary_name()).context("opencode was not found in PATH")?;
+            let status = Command::new(binary)
                 .arg("session")
                 .arg("delete")
                 .arg(&session.session_id)
@@ -291,12 +305,151 @@ fn interactive_delete(
     if !confirm_delete(&targets)? {
         return Ok(());
     }
-    for session in targets {
-        if let Err(err) = delete_session(provider, &session, &mut index) {
-            eprintln!("[failed] {} {}", session.session_id, err);
+    delete_batch(provider, &targets, &mut index)?;
+    index.save(provider)
+}
+
+fn delete_batch(
+    provider: ProviderKind,
+    targets: &[crate::session::SessionRecord],
+    index: &mut AliasIndex,
+) -> Result<()> {
+    if targets.is_empty() {
+        return Ok(());
+    }
+    let backup = match provider {
+        ProviderKind::Claude => Some(crate::local_store::claude_delete(targets)?),
+        ProviderKind::Antigravity => Some(crate::antigravity::delete(targets)?),
+        _ => None,
+    };
+    if let Some(id) = backup {
+        for session in targets {
+            index.remove_alias(provider, &session.session_id);
+        }
+        eprintln!(
+            "Local CLI history removed. Recovery backup: {id}\nRestore: sessionhub {} recovery restore {id}\nBackup still uses disk space; purge it explicitly when no longer needed.",
+            provider.name()
+        );
+    } else {
+        // Delete deepest children first: OpenCode's native delete may cascade.
+        let mut ordered = targets.iter().collect::<Vec<_>>();
+        ordered.sort_by_key(|s| std::cmp::Reverse(s.agent_depth));
+        let mut errors = Vec::new();
+        for session in ordered {
+            if let Err(error) = delete_session(provider, session, index) {
+                errors.push(format!("{}: {error:#}", session.session_id));
+            }
+        }
+        if !errors.is_empty() {
+            index.save(provider)?;
+            return Err(anyhow!("some deletions failed: {}", errors.join("; ")));
         }
     }
-    index.save(provider)
+    Ok(())
+}
+
+fn recovery_command(provider: ProviderKind, args: &[String]) -> Result<()> {
+    use crate::local_store::{Backup, recovery_root};
+    match args.first().map(String::as_str).unwrap_or("list") {
+        "list" => {
+            anyhow::ensure!(args.len() <= 1, "recovery list accepts no arguments");
+            let root = recovery_root(provider);
+            if !root.try_exists()? {
+                println!("No recovery backups.");
+                return Ok(());
+            }
+            for entry in fs::read_dir(root)? {
+                let entry = entry?;
+                let id = entry.file_name().to_string_lossy().into_owned();
+                if let Ok(backup) = Backup::load(provider, &id) {
+                    let size = ["history.tar.gz", "manifest.json"]
+                        .iter()
+                        .map(|name| fs::metadata(backup.dir.join(name)).map(|m| m.len()))
+                        .collect::<std::io::Result<Vec<_>>>();
+                    if let Ok(sizes) = size {
+                        println!(
+                            "{id}  {}  {} stored  {} history files",
+                            backup.manifest.state,
+                            format_bytes(sizes.iter().sum()),
+                            backup.manifest.files.len()
+                        );
+                    } else {
+                        eprintln!("[incomplete] recovery {id}; left untouched");
+                    }
+                } else {
+                    eprintln!("[unreadable] recovery {id}; left untouched")
+                }
+            }
+            Ok(())
+        }
+        "restore" => {
+            anyhow::ensure!(args.len() == 2, "use recovery restore <backup-id>");
+            let id = args
+                .get(1)
+                .ok_or_else(|| anyhow!("recovery restore requires a backup ID"))?;
+            let mut backup = Backup::load(provider, id)?;
+            let mut index = AliasIndex::load(provider)?;
+            crate::local_store::ensure_idle(provider)?;
+            match provider {
+                ProviderKind::Antigravity => crate::antigravity::restore(&backup)?,
+                ProviderKind::Claude => {
+                    backup.restore_files()?;
+                }
+                _ => {
+                    return Err(anyhow!(
+                        "no recoverable local-history adapter for this provider"
+                    ));
+                }
+            }
+            for (id, alias) in &backup.manifest.aliases {
+                if index.get_alias(provider, id).is_empty() {
+                    index.set_alias(provider, id, alias);
+                }
+            }
+            index.save(provider)?;
+            backup.mark("restored")?;
+            println!(
+                "Restored local CLI history from {id}. Backup retained until explicitly purged."
+            );
+            Ok(())
+        }
+        "purge" => {
+            anyhow::ensure!(
+                (2..=3).contains(&args.len()) && args.iter().skip(2).all(|a| a == "--yes"),
+                "use recovery purge <backup-id> [--yes]"
+            );
+            let id = args
+                .get(1)
+                .ok_or_else(|| anyhow!("recovery purge requires a backup ID"))?;
+            let backup = Backup::load(provider, id)?;
+            if !args.iter().any(|a| a == "--yes") {
+                anyhow::ensure!(
+                    io::stdin().is_terminal(),
+                    "purge requires confirmation; use --yes only after reviewing the backup"
+                );
+                eprint!("Permanently remove recovery {id}? Type PURGE: ");
+                io::stderr().flush()?;
+                let mut answer = String::new();
+                io::stdin().read_line(&mut answer)?;
+                if answer.trim() != "PURGE" {
+                    println!("Purge cancelled.");
+                    return Ok(());
+                }
+            }
+            fs::remove_dir_all(&backup.dir)?;
+            println!("Permanently purged recovery {id}; it cannot be restored.");
+            Ok(())
+        }
+        "help" | "--help" | "-h" => {
+            println!(
+                "recovery list | restore <backup-id> | purge <backup-id> [--yes]\nRecovery backups contain private history and use disk space until purged."
+            );
+            Ok(())
+        }
+        _ => Err(anyhow!(
+            "use recovery list | restore <backup-id> | purge <backup-id> [--yes]"
+        )),
+    }
 }
 
 fn with_connected_agents<'a>(
@@ -316,6 +469,22 @@ fn with_connected_agents<'a>(
                     })
                     .map(|candidate| candidate.session.session_id.clone()),
             );
+        }
+    }
+    if display
+        .first()
+        .is_some_and(|entry| entry.session.provider != ProviderKind::Codex)
+    {
+        loop {
+            let before = ids.len();
+            for entry in display {
+                if entry.session.is_agent && ids.contains(&entry.session.parent_session_id) {
+                    ids.insert(entry.session.session_id.clone());
+                }
+            }
+            if ids.len() == before {
+                break;
+            }
         }
     }
     display
@@ -504,12 +673,17 @@ fn delete_command(provider: ProviderKind, args: &[String]) -> Result<()> {
             provider.display_name()
         ));
     }
-    if args.is_empty() {
+    let values = args
+        .iter()
+        .filter(|a| !matches!(a.as_str(), "--yes" | "--dry-run"))
+        .cloned()
+        .collect::<Vec<_>>();
+    if values.is_empty() {
         return Err(anyhow!("delete requires at least one session id."));
     }
     let (_index, sessions) = load_index_and_sessions(provider)?;
     let display = display_sessions(&sessions);
-    let selected = args
+    let selected = values
         .iter()
         .map(|value| {
             find_session(&display, value, Some(provider))
@@ -521,12 +695,33 @@ fn delete_command(provider: ProviderKind, args: &[String]) -> Result<()> {
         .into_iter()
         .map(|entry| entry.session.clone())
         .collect::<Vec<_>>();
-    let mut index = AliasIndex::load(provider)?;
-    for session in targets {
-        match delete_session(provider, &session, &mut index) {
-            Ok(_) => println!("[deleted] {} Deleted", session.session_id),
-            Err(err) => println!("[failed] {} {}", session.session_id, err),
+    if args.iter().any(|a| a == "--dry-run") {
+        for session in targets {
+            println!(
+                "[would delete] {} {} {}",
+                session.session_id,
+                format_bytes(session.storage_bytes),
+                session.display_title
+            );
         }
+        return Ok(());
+    }
+    if matches!(provider, ProviderKind::Claude | ProviderKind::Antigravity)
+        && !args.iter().any(|a| a == "--yes")
+    {
+        anyhow::ensure!(
+            io::stdin().is_terminal(),
+            "delete requires confirmation; review with --dry-run, then use --yes or the interactive picker"
+        );
+        if !confirm_delete(&targets)? {
+            println!("Deletion cancelled.");
+            return Ok(());
+        }
+    }
+    let mut index = AliasIndex::load(provider)?;
+    delete_batch(provider, &targets, &mut index)?;
+    for session in targets {
+        println!("[deleted] {} Deleted from CLI history", session.session_id);
     }
     index.save(provider)
 }
@@ -561,19 +756,25 @@ fn cleanup_usage(provider: ProviderKind) {
     println!();
     println!("Options:");
     println!("  --dry-run            Print candidates without deleting");
-    println!("  --security-scans      Include only generated security scans");
+    if provider == ProviderKind::Codex {
+        println!("  --security-scans      Include generated security scans");
+    }
     println!("  --agents              Include only old agents linked to retained chats");
     println!("  --orphans             Include only agents whose root chat is missing");
+    println!("  --chats               Explicitly include old chats and their agents (default 90d)");
     println!("  --older-than <age>    Override retention age (examples: 12h, 7d, 4w)");
     println!();
-    println!("Defaults: security scans 7d, linked agents 30d, orphan agents 7d.");
-    println!("Normal root chats are never cleanup candidates.");
+    println!("Defaults: linked agents 30d, orphan agents 7d; Codex security scans 7d.");
+    println!("Normal root chats are preserved unless --chats is explicitly supplied.");
 }
 
 fn parse_cleanup_options(args: &[String]) -> Result<(CleanupPolicy, bool)> {
-    let category_filter = args
-        .iter()
-        .any(|arg| matches!(arg.as_str(), "--security-scans" | "--agents" | "--orphans"));
+    let category_filter = args.iter().any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--security-scans" | "--agents" | "--orphans" | "--chats"
+        )
+    });
     let mut policy = CleanupPolicy {
         include_security_scans: !category_filter,
         include_linked_agents: !category_filter,
@@ -588,6 +789,7 @@ fn parse_cleanup_options(args: &[String]) -> Result<(CleanupPolicy, bool)> {
             "--security-scans" => policy.include_security_scans = true,
             "--agents" => policy.include_linked_agents = true,
             "--orphans" => policy.include_orphan_agents = true,
+            "--chats" => policy.include_chats = true,
             "--older-than" => {
                 let value = args
                     .get(index + 1)
@@ -596,6 +798,7 @@ fn parse_cleanup_options(args: &[String]) -> Result<(CleanupPolicy, bool)> {
                 policy.security_scan_age = age;
                 policy.linked_agent_age = age;
                 policy.orphan_agent_age = age;
+                policy.chat_age = age;
                 index += 1;
             }
             "--help" | "-h" => {}
@@ -613,7 +816,7 @@ fn print_cleanup_groups(groups: &[CleanupGroup]) {
         .sum::<usize>();
     let total_bytes = groups.iter().map(|group| group.storage_bytes).sum::<u64>();
     println!(
-        "{} cleanup groups · {} sessions · {} reclaimable",
+        "{} cleanup groups · {} sessions · {} in selected history (recovery/database overhead may remain)",
         groups.len(),
         total_sessions,
         format_bytes(total_bytes)
@@ -635,7 +838,7 @@ fn print_cleanup_groups(groups: &[CleanupGroup]) {
     }
 }
 
-fn confirm_cleanup(groups: &[&CleanupGroup]) -> Result<bool> {
+fn confirm_cleanup(provider: ProviderKind, groups: &[&CleanupGroup]) -> Result<bool> {
     let sessions = groups
         .iter()
         .map(|group| group.session_ids.len())
@@ -661,8 +864,21 @@ fn confirm_cleanup(groups: &[&CleanupGroup]) -> Result<bool> {
         eprintln!("  - ... and {} more groups", groups.len() - 8);
     }
     eprintln!("Normal root chats are preserved by agent cleanup.");
-    eprintln!("Security-scan groups include their generated root and agent logs.");
-    eprint!("Type DELETE to permanently remove these session files: ");
+    if groups
+        .iter()
+        .any(|g| g.kind == crate::cleanup::CleanupKind::Chats)
+    {
+        eprintln!("Explicitly selected old-chat groups remove the root chat and its agents.");
+    }
+    if provider == ProviderKind::Codex {
+        eprintln!("Security-scan groups include their generated root and agent logs.");
+    }
+    if matches!(provider, ProviderKind::Claude | ProviderKind::Antigravity) {
+        eprintln!(
+            "Local CLI history only. A compressed recovery backup will remain until explicitly purged."
+        );
+    }
+    eprint!("Type DELETE to remove the selected history: ");
     io::stderr().flush()?;
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
@@ -670,11 +886,10 @@ fn confirm_cleanup(groups: &[&CleanupGroup]) -> Result<bool> {
 }
 
 fn cleanup_command(provider: ProviderKind, args: &[String]) -> Result<()> {
-    if provider != ProviderKind::Codex {
-        return Err(anyhow!(
-            "cleanup currently supports Codex sessions through csx only"
-        ));
-    }
+    anyhow::ensure!(
+        provider == ProviderKind::Codex || !args.iter().any(|a| a == "--security-scans"),
+        "security-scan grouping applies to Codex only"
+    );
     if args
         .iter()
         .any(|arg| matches!(arg.as_str(), "--help" | "-h"))
@@ -704,7 +919,7 @@ fn cleanup_command(provider: ProviderKind, args: &[String]) -> Result<()> {
         .iter()
         .filter(|group| selected_key_set.contains(&group.key))
         .collect::<Vec<_>>();
-    if !confirm_cleanup(&selected_groups)? {
+    if !confirm_cleanup(provider, &selected_groups)? {
         println!("Cleanup cancelled.");
         return Ok(());
     }
@@ -744,7 +959,17 @@ fn cleanup_command(provider: ProviderKind, args: &[String]) -> Result<()> {
         .iter()
         .filter(|session| selected_ids.contains(&session.session_id))
         .collect::<Vec<_>>();
-    targets.sort_by_key(|session| !session.is_agent);
+    targets.sort_by_key(|session| std::cmp::Reverse(session.agent_depth));
+    if matches!(provider, ProviderKind::Claude | ProviderKind::Antigravity) {
+        let targets = targets.into_iter().cloned().collect::<Vec<_>>();
+        delete_batch(provider, &targets, &mut alias_index)?;
+        alias_index.save(provider)?;
+        println!(
+            "Cleanup complete: {} sessions removed from local CLI history. Compressed recovery retained; purge it to reclaim that space.",
+            targets.len()
+        );
+        return Ok(());
+    }
     let mut deleted = 0usize;
     let mut reclaimed = 0u64;
     let mut failed = 0usize;
@@ -762,8 +987,13 @@ fn cleanup_command(provider: ProviderKind, args: &[String]) -> Result<()> {
     }
     alias_index.save(provider)?;
     println!(
-        "Cleanup complete: {deleted} session files removed, {} reclaimed{}.",
+        "Cleanup complete: {deleted} sessions removed, {} {}{}.",
         format_bytes(reclaimed),
+        if provider == ProviderKind::Opencode {
+            "estimated payload removed (shared database may retain disk space)"
+        } else {
+            "of session files removed"
+        },
         if failed == 0 {
             String::new()
         } else {
@@ -898,6 +1128,11 @@ fn hidden_select(provider: ProviderKind, args: &[String]) -> Result<()> {
                     ));
                 }
                 let selected = connected_chat(&display, selected[0]);
+                anyhow::ensure!(
+                    !(selected.session.provider == ProviderKind::Claude
+                        && selected.session.is_agent),
+                    "the parent Claude chat is missing; agent logs can be previewed or cleaned but not resumed alone"
+                );
                 println!(
                     "{}	{}",
                     selected.session.project_path, selected.session.session_id
@@ -917,6 +1152,10 @@ fn hidden_select(provider: ProviderKind, args: &[String]) -> Result<()> {
 }
 
 fn resume_session(session: &crate::session::SessionRecord) -> Result<()> {
+    anyhow::ensure!(
+        !(session.provider == ProviderKind::Claude && session.is_agent),
+        "the parent Claude conversation is missing; this agent cannot be resumed alone"
+    );
     resume_provider(
         session.provider,
         &session.session_id,
@@ -1074,6 +1313,13 @@ fn doctor_command(provider: ProviderKind) -> Result<()> {
     println!("FzfAvailable: {fzf_available}");
     println!("BinaryName: {}", provider.binary_name());
     println!("CommandAvailable: {binary_available}");
+    if matches!(provider, ProviderKind::Claude | ProviderKind::Antigravity) {
+        println!("HistoryDeletion: offline local CLI history with compressed recovery");
+        println!(
+            "RecoveryRoot: {}",
+            crate::local_store::recovery_root(provider).display()
+        );
+    }
     println!("LauncherRoot: {}", launcher_root.display());
     println!("ProfilePath: {}", profile_path.display());
     println!("ProfileInstalled: {profile_installed}");
@@ -1093,10 +1339,17 @@ fn usage(provider: ProviderKind) -> Result<()> {
     );
     println!("{} reset <session-id>", provider.launcher_name());
     if provider.supports_delete() {
-        println!("{} delete <session-id...>", provider.launcher_name());
+        println!(
+            "{} delete <session-id...> [--dry-run] [--yes]",
+            provider.launcher_name()
+        );
     }
-    if provider == ProviderKind::Codex {
-        println!("{} cleanup [options]", provider.launcher_name());
+    println!("{} cleanup [options]", provider.launcher_name());
+    if matches!(provider, ProviderKind::Claude | ProviderKind::Antigravity) {
+        println!(
+            "{} recovery list | restore <id> | purge <id> [--yes]",
+            provider.launcher_name()
+        );
     }
     println!("{} doctor", provider.launcher_name());
     println!("{} install-shell", provider.launcher_name());
@@ -1180,5 +1433,13 @@ mod tests {
         assert!(policy.include_linked_agents);
         assert!(!policy.include_orphan_agents);
         assert_eq!(policy.linked_agent_age, Duration::days(90));
+        assert!(!policy.include_chats);
+        let (policy, _) =
+            parse_cleanup_options(&["--chats".into(), "--older-than".into(), "180d".into()])
+                .unwrap();
+        assert!(policy.include_chats);
+        assert!(!policy.include_linked_agents);
+        assert!(!policy.include_security_scans);
+        assert_eq!(policy.chat_age, Duration::days(180));
     }
 }

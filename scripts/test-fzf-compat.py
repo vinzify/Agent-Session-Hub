@@ -162,13 +162,18 @@ def main():
         project.mkdir()
         with sqlite3.connect(antigravity / "conversation_summaries.db") as db:
             db.execute("CREATE TABLE conversation_summaries (conversation_id TEXT, title TEXT, "
-                       "preview TEXT, last_modified_time TEXT, workspace_uris TEXT)")
-            db.execute("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)",
+                       "preview TEXT, last_modified_time TEXT, workspace_uris TEXT, "
+                       "parent_conversation_id TEXT, nesting_depth INTEGER, agent_name TEXT)")
+            db.execute("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                        ("ag-chat", "ANTIGRAVITY_CANARY prepare release",
                         "AG_PREVIEW_CANARY review the release plan",
-                        "2026-11-07 10:43:48.388633693+00:00", json.dumps([project.as_uri()])))
-        with sqlite3.connect(antigravity / "conversations/ag-chat.db") as db:
-            db.execute("CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_payload BLOB)")
+                        "2026-11-07 10:43:48.388633693+00:00", json.dumps([project.as_uri()]), "", 0, ""))
+            db.execute("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                       ("ag-agent", "Antigravity agent review", "Check the release",
+                        "2026-11-07 10:40:00+00:00", json.dumps([project.as_uri()]), "ag-chat", 1, "AGAuditAgent"))
+        for identity in ("ag-chat", "ag-agent"):
+            with sqlite3.connect(antigravity / f"conversations/{identity}.db") as db:
+                db.execute("CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_payload BLOB)")
         env["CODEX_SESSION_HUB_ANTIGRAVITY_SESSION_ROOT"] = str(antigravity)
         picker = Picker(binary, env, ["__select"], provider="antigravity")
         try:
@@ -180,6 +185,41 @@ def main():
         finally:
             picker.close()
         print("PASS: Antigravity index loading, title search, preview, and workspace selection")
+
+        picker = Picker(binary, env, ["__select"], provider="antigravity")
+        try:
+            picker.wait_for(lambda text: "ANTIGRAVITY_CANARY" in text, "Antigravity startup missing")
+            picker.child.send("\x1b[B\x01")
+            picker.wait_for(lambda text: "Agent: AGAuditAgent" in text, "Antigravity expansion failed")
+            picker.child.send("title:AGAuditAgent")
+            picker.wait_for(lambda text: "ANTIGRAVITY_CANARY" in text and "Agent: AGAuditAgent" in text,
+                            "Antigravity agent search lost its parent chat")
+            picker.finish("\x1b")
+        finally:
+            picker.close()
+        print("PASS: Antigravity agent expansion, parent-preserving search, and cancellation")
+
+        claude = root / "claude"
+        for relative, title in (
+            ("claude-root.jsonl", "CLAUDE_ROOT_CANARY plan release"),
+            ("claude-root/subagents/agent-review.jsonl", "Check the release"),
+        ):
+            path = claude / "project" / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"sessionId": "claude-root", "cwd": str(project),
+                                       "timestamp": "2026-11-07T10:00:00Z", "type": "user",
+                                       "message": {"content": title}}) + "\n")
+        env["CODEX_SESSION_HUB_CLAUDE_SESSION_ROOT"] = str(claude)
+        picker = Picker(binary, env, ["__select"], provider="claude")
+        try:
+            picker.wait_for(lambda text: "CLAUDE_ROOT_CANARY" in text, "Claude startup missing")
+            picker.child.send("\x1b[B\x01")
+            picker.wait_for(lambda text: "Agent: review" in text, "Claude expansion failed")
+            picker.child.send("\x1b[B")
+            picker.finish("\r", expected_selection=str(project) + "\tclaude-root")
+        finally:
+            picker.close()
+        print("PASS: Claude agent expansion and resuming the connected root conversation")
 
 
 if __name__ == "__main__":

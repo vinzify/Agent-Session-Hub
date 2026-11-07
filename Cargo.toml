@@ -1,6 +1,6 @@
 [package]
 name = "agent-session-hub"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 description = "fzf-powered session browser for Codex CLI, Claude Code, OpenCode, and Antigravity CLI"
 license = "MIT"

@@ -58,7 +58,7 @@ impl ProviderKind {
     }
 
     pub fn supports_delete(self) -> bool {
-        matches!(self, Self::Codex | Self::Opencode)
+        true
     }
 
     pub fn session_root_env(self) -> &'static str {
@@ -117,6 +117,6 @@ mod tests {
         assert_eq!(ProviderKind::alias_from_argv0(r"C:\bin\agx.exe"), provider);
         assert_eq!(provider.binary_name(), "agy");
         assert_eq!(provider.index_file_name(), "antigravity-index.json");
-        assert!(!provider.supports_delete());
+        assert!(provider.supports_delete());
     }
 }

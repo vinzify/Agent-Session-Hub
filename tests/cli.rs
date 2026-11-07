@@ -304,6 +304,576 @@ fn antigravity_fixture(root: &Path) -> rusqlite::Connection {
     connection
 }
 
+fn history_action(root: &Path, args: &[&str]) -> Command {
+    let mut command = cli_command(root, args);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Isolate the process probe from whatever coding apps the developer is
+        // running. All destructive tests point only at this test's store.
+        let bin = root.join("process-probe");
+        fs::create_dir_all(&bin).unwrap();
+        let ps = bin.join("ps");
+        fs::write(&ps, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&ps, fs::Permissions::from_mode(0o755)).unwrap();
+        let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        )))
+        .unwrap();
+        command.env("PATH", path);
+    }
+    command
+}
+
+fn only_backup(root: &Path, provider: &str) -> String {
+    let entries = fs::read_dir(root.join("config/recovery").join(provider))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(entries.len(), 1);
+    entries[0].clone()
+}
+
+#[test]
+fn antigravity_delete_and_restore_preserve_unrelated_rows_caches_aliases_and_projects() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let conn = antigravity_fixture(root);
+    conn.execute_batch("ALTER TABLE conversation_summaries ADD COLUMN parent_conversation_id TEXT DEFAULT '';
+        ALTER TABLE conversation_summaries ADD COLUMN nesting_depth INTEGER DEFAULT 0;
+        ALTER TABLE conversation_summaries ADD COLUMN agent_name TEXT DEFAULT '';
+        ALTER TABLE conversation_summaries ADD COLUMN not_fully_idle INTEGER DEFAULT 0;
+        INSERT INTO conversation_summaries SELECT 'ag-child','Worker','Child preview',last_modified_time,workspace_uris,'ag-chat',1,'Worker',0 FROM conversation_summaries WHERE conversation_id='ag-chat';
+        INSERT INTO conversation_summaries SELECT 'keep','Keep','Keep preview',last_modified_time,workspace_uris,'ag-chat',0,'',0 FROM conversation_summaries WHERE conversation_id='ag-chat';
+        CREATE VIRTUAL TABLE conversations_fts USING fts5(conversation_id UNINDEXED,title,body);
+        INSERT INTO conversations_fts VALUES('ag-chat','Root','Root transcript'),('ag-child','Child','Child transcript'),('keep','Keep','Keep transcript');").unwrap();
+    for id in ["ag-child", "keep"] {
+        let db = rusqlite::Connection::open(root.join(format!("sessions/conversations/{id}.db")))
+            .unwrap();
+        db.execute_batch("CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_payload BLOB)")
+            .unwrap();
+    }
+    let cache = root.join("sessions/cache");
+    fs::create_dir(&cache).unwrap();
+    fs::write(cache.join("conversation_metadata.json"),json!({"conversations":{"ag-chat":{"summary":{"ID":"ag-chat","Cloud":false}},"ag-child":{"summary":{"ID":"ag-child","Cloud":false}},"keep":{"summary":{"ID":"keep"}}}}).to_string()).unwrap();
+    fs::write(
+        cache.join("last_conversations.json"),
+        json!({"/example/root":"ag-chat","/example/other":"keep"}).to_string(),
+    )
+    .unwrap();
+    let project = root.join("Sicilia café project/keep.rs");
+    fs::write(&project, "user project stays unchanged\n").unwrap();
+    assert!(
+        cli(
+            root,
+            &["antigravity", "rename", "ag-chat", "--name", "Release work"]
+        )
+        .status
+        .success()
+    );
+    let original = fs::read(root.join("sessions/conversations/ag-chat.db")).unwrap();
+    let preview = history_action(root, &["antigravity", "delete", "ag-chat", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(preview.status.success());
+    assert!(String::from_utf8_lossy(&preview.stdout).contains("ag-child"));
+    // A depth-zero fork has a parent too, but is an independent chat and must
+    // survive deletion of the conversation it was forked from.
+    assert!(!String::from_utf8_lossy(&preview.stdout).contains("[would delete] keep"));
+    let deleted = history_action(root, &["antigravity", "delete", "ag-chat", "--yes"])
+        .output()
+        .unwrap();
+    assert!(
+        deleted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&deleted.stderr)
+    );
+    assert!(!root.join("sessions/conversations/ag-chat.db").exists());
+    assert!(!root.join("sessions/conversations/ag-child.db").exists());
+    assert!(root.join("sessions/conversations/keep.db").exists());
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM conversation_summaries", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM conversations_fts", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    let meta: serde_json::Value =
+        serde_json::from_slice(&fs::read(cache.join("conversation_metadata.json")).unwrap())
+            .unwrap();
+    assert!(meta["conversations"].get("ag-chat").is_none());
+    assert!(meta["conversations"].get("keep").is_some());
+    let id = only_backup(root, "antigravity");
+    // Another conversation/cache entry appears after deletion. Restore must not
+    // replace the shared index/cache with an old whole-store snapshot.
+    conn.execute(
+        "UPDATE conversation_summaries SET title='Keep changed' WHERE conversation_id='keep'",
+        [],
+    )
+    .unwrap();
+    let mut meta = meta;
+    meta["conversations"]["new unrelated entry"] = json!({"summary":{"ID":"new unrelated entry"}});
+    fs::write(cache.join("conversation_metadata.json"), meta.to_string()).unwrap();
+    let restored = history_action(root, &["antigravity", "recovery", "restore", &id])
+        .output()
+        .unwrap();
+    assert!(
+        restored.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restored.stderr)
+    );
+    assert_eq!(
+        fs::read(root.join("sessions/conversations/ag-chat.db")).unwrap(),
+        original
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM conversation_summaries", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        3
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM conversations_fts", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        3
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT title FROM conversation_summaries WHERE conversation_id='keep'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "Keep changed"
+    );
+    let meta: serde_json::Value =
+        serde_json::from_slice(&fs::read(cache.join("conversation_metadata.json")).unwrap())
+            .unwrap();
+    assert!(meta["conversations"].get("new unrelated entry").is_some());
+    assert!(
+        String::from_utf8_lossy(&cli(root, &["antigravity", "__query"]).stdout)
+            .contains("Release work")
+    );
+    assert_eq!(
+        fs::read_to_string(project).unwrap(),
+        "user project stays unchanged\n"
+    );
+    assert!(
+        history_action(root, &["antigravity", "recovery", "restore", &id])
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "restore is idempotent"
+    );
+    assert!(
+        !cli(root, &["antigravity", "recovery", "purge", &id])
+            .status
+            .success()
+    );
+    assert!(
+        cli(root, &["antigravity", "recovery", "purge", &id, "--yes"])
+            .status
+            .success()
+    );
+    assert!(!root.join("config/recovery/antigravity").join(id).exists());
+}
+
+#[test]
+fn antigravity_deletion_fails_closed_on_active_busy_corrupt_or_unknown_stores() {
+    for scenario in ["active", "busy", "corrupt cache", "unknown table"] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let conn = antigravity_fixture(root);
+        match scenario {
+            "active"=>conn.execute_batch("ALTER TABLE conversation_summaries ADD COLUMN not_fully_idle INTEGER DEFAULT 1").unwrap(),
+            "busy"=>conn.execute_batch("BEGIN IMMEDIATE").unwrap(),
+            "corrupt cache"=>{fs::create_dir(root.join("sessions/cache")).unwrap();fs::write(root.join("sessions/cache/conversation_metadata.json"),b"{ damaged").unwrap();},
+            "unknown table"=>conn.execute_batch("CREATE TABLE future_links (conversation_id TEXT)").unwrap(),
+            _=>unreachable!(),
+        }
+        let path = root.join("sessions/conversations/ag-chat.db");
+        let before = fs::read(&path).unwrap();
+        let output = history_action(root, &["antigravity", "delete", "ag-chat", "--yes"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{scenario}");
+        assert_eq!(fs::read(path).unwrap(), before);
+        assert!(
+            !root.join("config/recovery/antigravity").exists(),
+            "{scenario}"
+        );
+    }
+}
+
+fn claude_fixture(root: &Path) {
+    let project = root.join("project");
+    fs::create_dir(&project).unwrap();
+    fs::write(project.join("keep.rs"), "keep user code").unwrap();
+    for (relative, prompt) in [
+        ("root-chat.jsonl", "Main project work"),
+        ("root-chat/subagents/agent-audit.jsonl", "Audit work"),
+        (
+            "root-chat/subagents/workflows/run/agent-review.jsonl",
+            "Review work",
+        ),
+    ] {
+        let path = root.join("sessions/proj").join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path,format!("{}\n",json!({"sessionId":"root-chat","cwd":project,"timestamp":"2026-01-01T12:00:00Z","type":"user","message":{"content":prompt}}))).unwrap();
+    }
+    fs::write(
+        root.join("sessions/proj/root-chat/subagents/workflows/run/agent-review.meta.json"),
+        json!({"parentAgentId":"audit","toolUseId":"tool-1"}).to_string(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn claude_agent_grouping_sidecar_refresh_delete_and_recovery_work_together() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    claude_fixture(root);
+    let collapsed = cli(root, &["claude", "__query"]);
+    assert!(collapsed.status.success());
+    assert!(!String::from_utf8_lossy(&collapsed.stdout).contains("S:claude:root-chat:agent:"));
+    let review = "root-chat:agent:workflows/run/agent-review.jsonl";
+    let preview = cli(
+        root,
+        &["claude", "__preview", &format!("S:claude:{review}")],
+    );
+    assert!(String::from_utf8_lossy(&preview.stdout).contains("Depth:    2"));
+    fs::write(
+        root.join("sessions/proj/root-chat/subagents/workflows/run/agent-review.meta.json"),
+        json!({"parentAgentId":""}).to_string(),
+    )
+    .unwrap();
+    let preview = cli(
+        root,
+        &["claude", "__preview", &format!("S:claude:{review}")],
+    );
+    assert!(String::from_utf8_lossy(&preview.stdout).contains("Depth:    1"));
+    assert!(
+        cli(
+            root,
+            &["claude", "rename", "root-chat", "--name", "Claude work"]
+        )
+        .status
+        .success()
+    );
+    let plan = cli(root, &["claude", "cleanup", "--agents", "--dry-run"]);
+    assert!(plan.status.success());
+    assert!(String::from_utf8_lossy(&plan.stdout).contains("2 sessions"));
+    let deleted = history_action(root, &["claude", "delete", "root-chat", "--yes"])
+        .output()
+        .unwrap();
+    assert!(
+        deleted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&deleted.stderr)
+    );
+    assert!(!root.join("sessions/proj/root-chat.jsonl").exists());
+    assert!(
+        !root
+            .join("sessions/proj/root-chat/subagents/agent-audit.jsonl")
+            .exists()
+    );
+    let id = only_backup(root, "claude");
+    let restored = history_action(root, &["claude", "recovery", "restore", &id])
+        .output()
+        .unwrap();
+    assert!(
+        restored.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restored.stderr)
+    );
+    assert!(
+        root.join("sessions/proj/root-chat/subagents/workflows/run/agent-review.meta.json")
+            .exists()
+    );
+    assert!(
+        String::from_utf8_lossy(&cli(root, &["claude", "__query"]).stdout).contains("Claude work")
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("project/keep.rs")).unwrap(),
+        "keep user code"
+    );
+    fs::write(
+        root.join("sessions/proj/root-chat.jsonl"),
+        "newer user transcript",
+    )
+    .unwrap();
+    assert!(
+        !history_action(root, &["claude", "recovery", "restore", &id])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("sessions/proj/root-chat.jsonl")).unwrap(),
+        "newer user transcript"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn active_producer_or_history_symlink_blocks_local_deletion() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let _conn = antigravity_fixture(root);
+    let mut command = history_action(root, &["antigravity", "delete", "ag-chat", "--yes"]);
+    let ps = root.join("process-probe/ps");
+    fs::write(&ps, "#!/bin/sh\nprintf 'agy agy\\n'\n").unwrap();
+    fs::set_permissions(ps, fs::Permissions::from_mode(0o755)).unwrap();
+    let output = command.output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Close Antigravity"));
+    let path = root.join("sessions/conversations/ag-chat.db");
+    fs::remove_file(&path).unwrap();
+    let outside = root.join("project-file.db");
+    fs::write(&outside, b"unrelated project file").unwrap();
+    std::os::unix::fs::symlink(&outside, &path).unwrap();
+    assert!(
+        !history_action(root, &["antigravity", "delete", "ag-chat", "--yes"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert_eq!(fs::read(outside).unwrap(), b"unrelated project file");
+}
+
+#[test]
+fn damaged_or_relocated_recovery_is_refused_without_partial_restore_and_can_be_purged() {
+    for scenario in ["corrupt archive", "wrong root", "unsafe path"] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        claude_fixture(root);
+        let deleted = history_action(root, &["claude", "delete", "root-chat", "--yes"])
+            .output()
+            .unwrap();
+        assert!(
+            deleted.status.success(),
+            "{}",
+            String::from_utf8_lossy(&deleted.stderr)
+        );
+        let id = only_backup(root, "claude");
+        let dir = root.join("config/recovery/claude").join(&id);
+        match scenario {
+            "corrupt archive" => fs::write(dir.join("history.tar.gz"), b"damaged backup").unwrap(),
+            "wrong root" => {
+                let other = root.join("other-store");
+                fs::create_dir(&other).unwrap();
+                let path = dir.join("manifest.json");
+                let mut manifest: serde_json::Value =
+                    serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                manifest["root"] = json!(other.canonicalize().unwrap());
+                fs::write(path, manifest.to_string()).unwrap();
+            }
+            "unsafe path" => {
+                let path = dir.join("manifest.json");
+                let mut manifest: serde_json::Value =
+                    serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                manifest["files"][0]["relative"] = json!("../project/keep.rs");
+                fs::write(path, manifest.to_string()).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let restored = history_action(root, &["claude", "recovery", "restore", &id])
+            .output()
+            .unwrap();
+        assert!(!restored.status.success(), "{scenario}");
+        assert!(
+            !root.join("sessions/proj/root-chat.jsonl").exists(),
+            "{scenario}"
+        );
+        assert!(
+            !root
+                .join("sessions/proj/root-chat/subagents/agent-audit.jsonl")
+                .exists(),
+            "{scenario}"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("project/keep.rs")).unwrap(),
+            "keep user code"
+        );
+        assert!(dir.exists());
+        // Even a damaged archive can be explicitly purged. An invalid manifest
+        // is deliberately left untouched, since its scope cannot be validated.
+        if scenario == "corrupt archive" {
+            let purged = cli(root, &["claude", "recovery", "purge", &id, "--yes"]);
+            assert!(purged.status.success());
+            assert!(!dir.exists());
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_chat_cleanup_requires_confirmation_and_keeps_a_recoverable_copy() {
+    use std::{io::Write, os::unix::fs::PermissionsExt, process::Stdio};
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    claude_fixture(root);
+    for answer in ["cancel\n", "DELETE\n"] {
+        let mut command = history_action(
+            root,
+            &["claude", "cleanup", "--chats", "--older-than", "0d"],
+        );
+        let fzf = root.join("process-probe/fzf");
+        fs::write(&fzf, "#!/bin/sh\nif [ \"${1-}\" = \"--version\" ]; then printf '0.67.0\\n'; exit 0; fi\nIFS= read -r row\nprintf '%s\\n' \"$row\"\n").unwrap();
+        fs::set_permissions(&fzf, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(answer.as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if answer == "cancel\n" {
+            assert!(root.join("sessions/proj/root-chat.jsonl").exists());
+            assert!(!root.join("config/recovery/claude").exists());
+        }
+    }
+    assert!(!root.join("sessions/proj/root-chat.jsonl").exists());
+    assert!(
+        !root
+            .join("sessions/proj/root-chat/subagents/agent-audit.jsonl")
+            .exists()
+    );
+    let id = only_backup(root, "claude");
+    assert!(
+        history_action(root, &["claude", "recovery", "restore", &id])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(root.join("sessions/proj/root-chat.jsonl").exists());
+    assert_eq!(
+        fs::read_to_string(root.join("project/keep.rs")).unwrap(),
+        "keep user code"
+    );
+}
+
+#[test]
+fn alternate_opencode_store_is_browse_only_and_native_delete_is_not_invoked() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    fs::create_dir(root.join("sessions")).unwrap();
+    let path = root.join("sessions/opencode.db");
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch("CREATE TABLE session (id TEXT PRIMARY KEY, slug TEXT, directory TEXT, title TEXT, time_created INTEGER, time_updated INTEGER, time_archived INTEGER, workspace_id TEXT, parent_id TEXT);
+        CREATE TABLE workspace (id TEXT, branch TEXT);
+        CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT);
+        CREATE TABLE part (id TEXT, message_id TEXT, time_created INTEGER, data TEXT);
+        INSERT INTO session VALUES ('op-chat','chat','','Local history',1,1,NULL,NULL,NULL);").unwrap();
+    let command = |args: &[&str]| {
+        let mut command = cli_command(root, args);
+        command.env(
+            "CODEX_SESSION_HUB_OPENCODE_SESSION_ROOT",
+            root.join("sessions"),
+        );
+        command
+    };
+    let query = command(&["opencode", "__query"]).output().unwrap();
+    assert!(query.status.success());
+    assert!(String::from_utf8_lossy(&query.stdout).contains("Local history"));
+    let before = fs::read(&path).unwrap();
+    let deleted = command(&["opencode", "delete", "op-chat", "--yes"])
+        .output()
+        .unwrap();
+    assert!(!deleted.status.success());
+    assert!(
+        String::from_utf8_lossy(&deleted.stderr)
+            .contains("alternate hub session roots are browse-only")
+    );
+    assert_eq!(fs::read(&path).unwrap(), before);
+    let cleanup = command(&["opencode", "cleanup", "--chats", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(cleanup.status.success());
+    assert!(String::from_utf8_lossy(&cleanup.stdout).contains("No cleanup candidates"));
+}
+
+#[test]
+fn antigravity_recovery_preserves_committed_messages_in_wal_companions() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let _index = antigravity_fixture(root);
+    // Create a stable snapshot with an uncheckpointed committed WAL, then copy
+    // all three files to an offline conversation store (no writer owns it).
+    let source = rusqlite::Connection::open(root.join("source.db")).unwrap();
+    source
+        .execute_batch(
+            "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;
+        CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_payload BLOB);
+        INSERT INTO steps VALUES (1,x'6c6174657374206d657373616765');",
+        )
+        .unwrap();
+    for suffix in ["", "-wal", "-shm"] {
+        fs::copy(
+            root.join(format!("source.db{suffix}")),
+            root.join(format!("sessions/conversations/ag-chat.db{suffix}")),
+        )
+        .unwrap();
+    }
+    let before = ["", "-wal", "-shm"].map(|suffix| {
+        fs::read(root.join(format!("sessions/conversations/ag-chat.db{suffix}"))).unwrap()
+    });
+    let deleted = history_action(root, &["antigravity", "delete", "ag-chat", "--yes"])
+        .output()
+        .unwrap();
+    assert!(
+        deleted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&deleted.stderr)
+    );
+    let id = only_backup(root, "antigravity");
+    let restored = history_action(root, &["antigravity", "recovery", "restore", &id])
+        .output()
+        .unwrap();
+    assert!(
+        restored.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restored.stderr)
+    );
+    for (index, suffix) in ["", "-wal", "-shm"].into_iter().enumerate() {
+        assert_eq!(
+            fs::read(root.join(format!("sessions/conversations/ag-chat.db{suffix}"))).unwrap(),
+            before[index]
+        );
+    }
+    let restored =
+        rusqlite::Connection::open(root.join("sessions/conversations/ag-chat.db")).unwrap();
+    assert_eq!(
+        restored
+            .query_row("SELECT step_payload FROM steps WHERE idx=1", [], |r| r
+                .get::<_, Vec<u8>>(0))
+            .unwrap(),
+        b"latest message"
+    );
+}
+
 #[test]
 fn antigravity_queries_previews_and_aliases_leave_conversation_data_untouched() {
     let temp = tempfile::tempdir().unwrap();
@@ -366,7 +936,7 @@ fn antigravity_queries_previews_and_aliases_leave_conversation_data_untouched() 
             .success()
     );
     assert!(
-        !cli(root, &["antigravity", "cleanup", "--dry-run"])
+        cli(root, &["antigravity", "cleanup", "--dry-run"])
             .status
             .success()
     );
@@ -388,13 +958,19 @@ fn antigravity_launcher_identity_and_provider_diagnostics_are_correct() {
     let launcher = temp
         .path()
         .join(if cfg!(windows) { "agx.exe" } else { "agx" });
+    // This tests argv[0], not installed-copy migration (covered separately).
+    // A symlink avoids executing a just-written inode while concurrent POSIX
+    // test subprocesses may briefly inherit its writable descriptor.
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_agent-session-hub"), &launcher).unwrap();
+    #[cfg(not(unix))]
     fs::copy(env!("CARGO_BIN_EXE_agent-session-hub"), &launcher).unwrap();
     let help = Command::new(&launcher).arg("help").output().unwrap();
     assert!(help.status.success());
     let help = String::from_utf8(help.stdout).unwrap();
     assert!(help.contains("agx browse"));
-    assert!(!help.contains("agx delete"));
-    assert!(!help.contains("agx cleanup"));
+    assert!(help.contains("agx delete"));
+    assert!(help.contains("agx cleanup"));
     let doctor = cli(temp.path(), &["agx", "doctor"]);
     assert!(doctor.status.success());
     let doctor = String::from_utf8(doctor.stdout).unwrap();

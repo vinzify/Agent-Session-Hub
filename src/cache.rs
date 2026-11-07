@@ -1,13 +1,13 @@
 use crate::provider::ProviderKind;
 use crate::session::SessionMetadata;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{self, Metadata};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-const CACHE_VERSION: u32 = 1;
+const CACHE_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct FileStamp {
@@ -28,10 +28,28 @@ impl FileStamp {
     }
 }
 
+fn sidecar_stamp(path: &Path) -> Option<FileStamp> {
+    // Only Claude subagents have lineage sidecars. Avoid an extra stat for
+    // every Codex/Claude root transcript in a large history.
+    path.file_name()?
+        .to_str()?
+        .starts_with("agent-")
+        .then(|| {
+            let metadata = fs::symlink_metadata(path.with_extension("meta.json")).ok()?;
+            metadata
+                .is_file()
+                .then(|| FileStamp::from_metadata(&metadata))
+                .flatten()
+        })
+        .flatten()
+}
+
 #[derive(Serialize, Deserialize)]
 struct CacheEntry {
     stamp: FileStamp,
     session: Option<SessionMetadata>,
+    #[serde(default)]
+    sidecar_stamp: Option<FileStamp>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -56,7 +74,7 @@ pub fn cache_root() -> PathBuf {
 pub struct SessionCache {
     path: Option<PathBuf>,
     data: CacheData,
-    seen: HashSet<PathBuf>,
+    seen: HashMap<PathBuf, Option<FileStamp>>,
     dirty: bool,
 }
 
@@ -91,31 +109,45 @@ impl SessionCache {
         Self {
             path,
             data,
-            seen: HashSet::new(),
+            seen: HashMap::new(),
             dirty: false,
         }
     }
 
     pub fn get(&mut self, path: &Path, metadata: &Metadata) -> Option<Option<SessionMetadata>> {
-        self.seen.insert(path.to_path_buf());
+        let sidecar = sidecar_stamp(path);
+        self.seen.insert(path.to_path_buf(), sidecar.clone());
         let stamp = FileStamp::from_metadata(metadata)?;
         let entry = self.data.entries.get(path)?;
-        (entry.stamp == stamp).then(|| entry.session.clone())
+        (entry.stamp == stamp && entry.sidecar_stamp == sidecar).then(|| entry.session.clone())
     }
 
     pub fn insert(&mut self, path: &Path, metadata: &Metadata, session: Option<SessionMetadata>) {
         let Some(stamp) = FileStamp::from_metadata(metadata) else {
             return;
         };
-        self.data
-            .entries
-            .insert(path.to_path_buf(), CacheEntry { stamp, session });
+        let sidecar = sidecar_stamp(path);
+        if self.seen.get(path).is_some_and(|before| before != &sidecar) {
+            self.data.entries.remove(path);
+            self.dirty = true;
+            return;
+        }
+        self.data.entries.insert(
+            path.to_path_buf(),
+            CacheEntry {
+                stamp,
+                session,
+                sidecar_stamp: sidecar,
+            },
+        );
         self.dirty = true;
     }
 
     pub fn save(mut self) {
         let original_len = self.data.entries.len();
-        self.data.entries.retain(|path, _| self.seen.contains(path));
+        self.data
+            .entries
+            .retain(|path, _| self.seen.contains_key(path));
         if !self.dirty && self.data.entries.len() == original_len {
             return;
         }
@@ -152,6 +184,28 @@ impl SessionCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sidecar_changes_during_parse_are_not_cached() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("cache.json");
+        let source = temp.path().join("agent-audit.jsonl");
+        fs::write(&source, "fictional transcript").unwrap();
+        let metadata = fs::metadata(&source).unwrap();
+        let mut cache = SessionCache::load_from(Some(path.clone()), temp.path(), None);
+        assert!(cache.get(&source, &metadata).is_none());
+        fs::write(
+            source.with_extension("meta.json"),
+            r#"{"parentAgentId":"new-parent"}"#,
+        )
+        .unwrap();
+        cache.insert(&source, &metadata, None);
+        cache.save();
+        let mut cache = SessionCache::load_from(Some(path), temp.path(), None);
+        assert!(cache.get(&source, &metadata).is_none());
+        cache.insert(&source, &metadata, None);
+        cache.save();
+    }
 
     #[test]
     fn cache_invalidates_changed_deleted_and_relocated_files() {
