@@ -84,6 +84,10 @@ than forcing an overwrite. Custom installer roots are supported through the
 recorded locations. No `sudo`, session deletion, or shell-profile rewriting occurs
 during self-update. The canonical executable and all copied binary launchers are
 updated together with recovery on error; existing script wrappers remain in place.
+The newly installed version creates any missing provider shortcuts, preserving
+custom paths and refusing to overwrite existing files or symlinks. Windows runs
+that step through the post-exit helper. Failed migration rolls back new shortcuts;
+the update transaction also attempts to restore the original binaries on failure.
 
 On Windows, a temporary PowerShell helper waits for this command to exit before
 replacing locked executables. Other running hub processes may still prevent an
@@ -98,11 +102,27 @@ csx install-shell
 
 ### Adding the Antigravity shortcut to an older install
 
-After updating the binary, `sessionhub antigravity` works immediately. Self-update
-does not create new shortcuts or rewrite shell profiles. Rerun the current
-installer, preserving any custom `INSTALL_ROOT` / `BIN_ROOT` (PowerShell:
-`-InstallRoot` / `-BinRoot`), then reload your shell to install `agx` too.
-`install-shell` by itself refreshes shell functions, not the POSIX binary copies.
+With v0.5.1 or newer, missing shortcuts such as `agx` are added automatically in
+the recorded launcher directory. No installer rerun or shell reload is required
+to use the new command.
+
+One-time bootstrap from v0.4.x or v0.5.0:
+
+```sh
+sessionhub update
+sessionhub providers
+agx
+```
+
+The old updater cannot invoke new post-update logic. The first ordinary command
+run by the updated binary repairs missing shortcuts locally; future updates run
+that migration immediately. This also works when the current version is already
+installed, without downloading it again. Hidden query/preview commands and staged
+`--version` probes do not trigger repair. Unrecorded/source builds are not modified.
+
+Shell profiles are deliberately left alone. To add the optional `agx` shell
+function (for changing the parent shell's working directory), run
+`sessionhub install-shell` and reload your shell. The binary shortcut works without it.
 
 Antigravity support requires the `agy` CLI and its SQLite conversation store,
 normally `~/.gemini/antigravity-cli`. It does not read the older IDE's private

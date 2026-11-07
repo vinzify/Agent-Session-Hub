@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.1
+
+- Automatically create missing provider shortcuts in installer-managed installations, using the recorded custom launcher directory
+- Run the new version's shortcut migration immediately after updates, including through the Windows post-exit helper
+- Backfill updates performed by v0.4/v0.5 on the next ordinary hub command, without rerunning an installer or checking the network
+- Refuse to overwrite existing files or symlinks; preserve custom Windows wrappers and roll back newly created shortcuts on failure
+- Keep source builds, staged version probes, hidden query/preview helpers, shell profiles, sessions, and aliases outside automatic migration
+- Added startup, idempotence, collision, permission, custom-root, and update/migration rollback regression tests
+- Updated README and installation guidance to replace the manual-shortcut workaround
+
 ## 0.5.0
 
 - Added Google Antigravity CLI as a fourth provider: `agx` / `sessionhub antigravity`, resuming with `agy --conversation <id>` from the recorded workspace

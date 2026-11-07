@@ -4,7 +4,15 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 fn cli_command(root: &Path, args: &[&str]) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_agent-session-hub"));
+    cli_at(
+        root,
+        Path::new(env!("CARGO_BIN_EXE_agent-session-hub")),
+        args,
+    )
+}
+
+fn cli_at(root: &Path, binary: &Path, args: &[&str]) -> Command {
+    let mut command = Command::new(binary);
     command
         .args(args)
         .env("CODEX_SESSION_HUB_SESSION_ROOT", root.join("sessions"))
@@ -47,6 +55,223 @@ fn write_session(path: &Path, id: &str, project: &Path, title: &str) {
         "type": "event_msg", "payload": { "type": "user_message", "message": title }
     });
     fs::write(path, format!("{meta}\n{message}\n")).unwrap();
+}
+
+fn managed_install(
+    root: &Path,
+) -> (
+    std::path::PathBuf,
+    std::path::PathBuf,
+    Vec<std::path::PathBuf>,
+) {
+    let install = root.join("managed install è");
+    let bin = root.join("custom launchers è");
+    fs::create_dir_all(install.join("bin")).unwrap();
+    fs::create_dir(&bin).unwrap();
+    let install = install.canonicalize().unwrap();
+    let bin = bin.canonicalize().unwrap();
+    let executable = install.join("bin").join(if cfg!(windows) {
+        "agent-session-hub.exe"
+    } else {
+        "agent-session-hub"
+    });
+    let mut copies = vec![executable.clone()];
+    if cfg!(windows) {
+        copies.push(bin.join("agent-session-hub.exe"));
+    } else {
+        for name in ["csx", "clx", "opx", "sessionhub"] {
+            copies.push(bin.join(name));
+        }
+    }
+    for path in &copies {
+        fs::copy(env!("CARGO_BIN_EXE_agent-session-hub"), path).unwrap();
+    }
+    if cfg!(windows) {
+        for name in ["csx.cmd", "clx.cmd", "opx.cmd", "sessionhub.cmd"] {
+            fs::write(bin.join(name), b"custom existing wrapper\r\n").unwrap();
+        }
+    }
+    let record = json!({"format":1,"install_root":install,"bin_root":bin});
+    fs::write(install.join("installation.json"), record.to_string()).unwrap();
+    fs::write(
+        bin.join(".agent-session-hub-install.json"),
+        record.to_string(),
+    )
+    .unwrap();
+    (executable, bin, copies)
+}
+
+#[test]
+fn installed_commands_backfill_missing_shortcuts_without_installer_or_network() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let (exe, bin, copies) = managed_install(root);
+    let agx = bin.join(if cfg!(windows) { "agx.cmd" } else { "agx" });
+    let profile = root.join("profile");
+    fs::write(&profile, b"custom shell configuration stays untouched\n").unwrap();
+    let query = cli_at(root, &exe, &["--provider", "codex", "__query"])
+        .output()
+        .unwrap();
+    assert!(query.status.success());
+    assert!(!agx.exists());
+    let probe_dir = root.join("version probe");
+    fs::create_dir(&probe_dir).unwrap();
+    let probe = probe_dir.join(if cfg!(windows) {
+        "candidate.exe"
+    } else {
+        "candidate"
+    });
+    fs::copy(&exe, &probe).unwrap();
+    assert!(
+        cli_at(root, &probe, &["--version"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(
+        !agx.exists(),
+        "a downloaded version probe must not migrate an installation"
+    );
+    let output = cli_at(root, &exe, &["providers"])
+        .env("PROFILE", &profile)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Added missing Agent Session Hub shortcuts")
+    );
+    assert!(agx.is_file());
+    if cfg!(windows) {
+        assert!(
+            fs::read_to_string(&agx)
+                .unwrap()
+                .contains("--provider antigravity")
+        );
+        assert_eq!(
+            fs::read(bin.join("csx.cmd")).unwrap(),
+            b"custom existing wrapper\r\n"
+        );
+    } else {
+        assert_eq!(fs::read(&agx).unwrap(), fs::read(&exe).unwrap());
+    }
+    let again = cli_at(root, &exe, &["version"]).output().unwrap();
+    assert!(again.status.success());
+    assert!(again.stderr.is_empty());
+    assert!(
+        cli_at(root, &exe, &["__migrate-shortcuts"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    for copy in copies {
+        assert_eq!(fs::read(copy).unwrap(), fs::read(&exe).unwrap());
+    }
+    assert_eq!(
+        fs::read(profile).unwrap(),
+        b"custom shell configuration stays untouched\n"
+    );
+    assert!(!root.join("config").exists());
+    assert!(!root.join("cache/update-check.json").exists());
+}
+
+#[test]
+fn shortcut_migration_never_overwrites_existing_commands() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let (exe, bin, _) = managed_install(root);
+    let agx = bin.join(if cfg!(windows) { "agx.cmd" } else { "agx" });
+    fs::write(&agx, b"unrelated user command").unwrap();
+    let output = cli_at(root, &exe, &["__migrate-shortcuts"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.success(), cfg!(windows));
+    assert_eq!(fs::read(&agx).unwrap(), b"unrelated user command");
+    #[cfg(unix)]
+    {
+        fs::remove_file(&agx).unwrap();
+        std::os::unix::fs::symlink(root.join("missing target"), &agx).unwrap();
+        assert!(
+            !cli_at(root, &exe, &["__migrate-shortcuts"])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        assert!(fs::symlink_metadata(&agx).unwrap().file_type().is_symlink());
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_update_helper_runs_new_binary_migration_and_rolls_back_hook_failure() {
+    use sha2::{Digest, Sha256};
+    for fail_hook in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let (exe, bin, copies) = managed_install(root);
+        let source = root.join("new.exe");
+        fs::copy(&exe, &source).unwrap();
+        for path in &copies {
+            fs::write(path, b"old executable").unwrap();
+        }
+        let stage = tempfile::Builder::new()
+            .prefix("agent-session-hub-update-")
+            .tempdir()
+            .unwrap();
+        let files = copies.iter().map(|path| json!({"destination":path,"source":source,"sha256":format!("{:x}",Sha256::digest(b"old executable"))})).collect::<Vec<_>>();
+        let migration = if fail_hook {
+            bin.join("missing.exe")
+        } else {
+            exe.clone()
+        };
+        let plan = stage.path().join("plan.json");
+        fs::write(
+            &plan,
+            json!({"files":files,"stage":stage.path(),"migration":migration}).to_string(),
+        )
+        .unwrap();
+        let script = stage.path().join("apply.ps1");
+        fs::write(&script, include_str!("../src/update-windows.ps1")).unwrap();
+        let result = Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+            ])
+            .arg(script)
+            .arg("-PlanPath")
+            .arg(plan)
+            .arg("-AshParentId")
+            .arg("2147483647")
+            .output()
+            .unwrap();
+        assert_eq!(
+            result.status.success(),
+            !fail_hook,
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        for path in copies {
+            assert_eq!(
+                fs::read(path).unwrap(),
+                if fail_hook {
+                    b"old executable".to_vec()
+                } else {
+                    fs::read(&source).unwrap()
+                }
+            );
+        }
+        assert_eq!(bin.join("agx.cmd").exists(), !fail_hook);
+    }
 }
 
 fn antigravity_fixture(root: &Path) -> rusqlite::Connection {

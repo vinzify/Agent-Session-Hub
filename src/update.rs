@@ -204,13 +204,14 @@ impl Installation {
             for name in ["csx", "clx", "opx", "sessionhub"] {
                 paths.push(self.bin_root.join(name));
             }
-            // v0.4.0's updater replaces only its known launchers. Keep those
-            // installations updateable; a new install adds agx, after which it
-            // participates in the same validation/replacement transaction.
-            let antigravity = self.bin_root.join("agx");
-            if !matches!(fs::symlink_metadata(&antigravity), Err(error) if error.kind() == io::ErrorKind::NotFound)
-            {
-                paths.push(antigravity);
+            // Old updater versions know only the original launchers. Missing
+            // newer shortcuts are migrated separately, never required up front.
+            for provider in crate::provider::ProviderKind::all() {
+                let shortcut = self.bin_root.join(provider.launcher_name());
+                if !matches!(fs::symlink_metadata(&shortcut), Err(error) if error.kind() == io::ErrorKind::NotFound)
+                {
+                    paths.push(shortcut);
+                }
             }
         }
         paths.sort();
@@ -258,7 +259,7 @@ pub fn record_install(install_root: &Path, bin_root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn installation() -> Result<Installation> {
+fn installation_record() -> Result<Option<Installation>> {
     let current = std::env::current_exe()?.canonicalize()?;
     let parent = current.parent().context("executable has no directory")?;
     let candidates = [
@@ -269,13 +270,193 @@ fn installation() -> Result<Installation> {
         if path.try_exists()? {
             let record: Installation = serde_json::from_slice(&fs::read(&path)?)
                 .with_context(|| format!("read installation record {}", path.display()))?;
-            record.validate(&current)?;
-            return Ok(record);
+            return Ok(Some(record));
         }
     }
-    bail!(
+    Ok(None)
+}
+
+fn installation() -> Result<Installation> {
+    let record = installation_record()?.context(
         "This is not a recorded installer-managed installation. Run the current install.sh/install.ps1 once to enable self-update. Source and package-manager builds should use their own update method."
-    )
+    )?;
+    record.validate(&std::env::current_exe()?.canonicalize()?)?;
+    Ok(record)
+}
+
+fn missing_shortcuts(
+    record: &Installation,
+) -> Result<Vec<(PathBuf, Option<crate::provider::ProviderKind>)>> {
+    let mut shortcuts = crate::provider::ProviderKind::all()
+        .into_iter()
+        .map(|provider| {
+            let name = if cfg!(windows) {
+                format!("{}.cmd", provider.launcher_name())
+            } else {
+                provider.launcher_name().to_string()
+            };
+            (record.bin_root.join(name), Some(provider))
+        })
+        .collect::<Vec<_>>();
+    shortcuts.push((
+        record.bin_root.join(if cfg!(windows) {
+            "sessionhub.cmd"
+        } else {
+            "sessionhub"
+        }),
+        None,
+    ));
+    let mut missing = Vec::new();
+    for shortcut in shortcuts {
+        match fs::symlink_metadata(&shortcut.0) {
+            Ok(_) => {} // Preserve existing files, directories and even dangling symlinks.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => missing.push(shortcut),
+            Err(error) => return Err(error).context("inspect installed shortcuts"),
+        }
+    }
+    Ok(missing)
+}
+
+fn create_shortcut(path: &Path, bytes: &[u8], permissions: Option<fs::Permissions>) -> Result<()> {
+    let mut staged =
+        tempfile::NamedTempFile::new_in(path.parent().context("shortcut has no directory")?)?;
+    staged.write_all(bytes)?;
+    if let Some(permissions) = permissions {
+        staged.as_file().set_permissions(permissions)?;
+    }
+    staged.as_file().sync_all()?;
+    // Unlike replacement, this refuses any file/symlink created after the check.
+    staged.persist_noclobber(path).with_context(|| {
+        format!(
+            "create shortcut {}; existing files are never overwritten",
+            path.display()
+        )
+    })?;
+    Ok(())
+}
+
+struct NewShortcut {
+    path: PathBuf,
+    bytes: Vec<u8>,
+    permissions: Option<fs::Permissions>,
+}
+
+fn create_shortcuts(shortcuts: Vec<NewShortcut>) -> Result<Vec<PathBuf>> {
+    let mut created = Vec::<(PathBuf, Vec<u8>)>::new();
+    for NewShortcut {
+        path,
+        bytes,
+        permissions,
+    } in shortcuts
+    {
+        if let Err(error) = create_shortcut(&path, &bytes, permissions) {
+            let mut recovery = Vec::new();
+            for (path, original) in created.iter().rev() {
+                let unchanged = fs::symlink_metadata(path).is_ok_and(|m| m.is_file())
+                    && fs::read(path).is_ok_and(|bytes| bytes == *original);
+                if !unchanged || fs::remove_file(path).is_err() {
+                    recovery.push(path.display().to_string());
+                }
+            }
+            ensure!(
+                recovery.is_empty(),
+                "shortcut migration failed: {error:#}; recovery required for: {}",
+                recovery.join(", ")
+            );
+            return Err(error).context("shortcut migration failed; new shortcuts rolled back");
+        }
+        created.push((path, bytes));
+    }
+    Ok(created.into_iter().map(|(path, _)| path).collect())
+}
+
+fn migrate_shortcuts(record: &Installation, current: &Path) -> Result<Vec<PathBuf>> {
+    let missing = missing_shortcuts(record)?;
+    if missing.is_empty() {
+        return Ok(Vec::new());
+    }
+    record.validate(current)?;
+    let binary = fs::read(current)?;
+    let permissions = fs::metadata(current)?.permissions();
+    let shortcuts = missing
+        .into_iter()
+        .map(|(path, provider)| {
+            let bytes = if cfg!(windows) {
+                match provider {
+                    Some(provider) => {
+                        crate::shell::cmd_launcher_content("agent-session-hub.exe", provider.name())
+                            .into_bytes()
+                    }
+                    None => b"@echo off\r\n\"%~dp0agent-session-hub.exe\" %*\r\n".to_vec(),
+                }
+            } else {
+                binary.clone()
+            };
+            NewShortcut {
+                path,
+                bytes,
+                permissions: (!cfg!(windows)).then(|| permissions.clone()),
+            }
+        })
+        .collect();
+    create_shortcuts(shortcuts)
+}
+
+/// Backfill upgrades performed by old updaters. Never writes from source builds,
+/// downloaded version probes, or high-frequency query/preview subprocesses.
+pub fn migrate_on_start(args: &[String]) {
+    if args.iter().any(|arg| arg.starts_with("__")) {
+        return;
+    }
+    let result = (|| -> Result<Vec<PathBuf>> {
+        let Some(record) = installation_record()? else {
+            return Ok(Vec::new());
+        };
+        migrate_shortcuts(&record, &std::env::current_exe()?.canonicalize()?)
+    })();
+    match result {
+        Ok(paths) if !paths.is_empty() => eprintln!(
+            "Added missing Agent Session Hub shortcuts: {}",
+            shortcut_names(&paths)
+        ),
+        Err(error) => eprintln!("Could not migrate Agent Session Hub shortcuts: {error:#}"),
+        _ => {}
+    }
+}
+
+fn shortcut_names(paths: &[PathBuf]) -> String {
+    paths
+        .iter()
+        .filter_map(|path| path.file_name())
+        .map(|name| name.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn migrate_command() -> Result<()> {
+    let record = installation()?;
+    let paths = migrate_shortcuts(&record, &std::env::current_exe()?.canonicalize()?)?;
+    if !paths.is_empty() {
+        println!("Added missing shortcuts: {}", shortcut_names(&paths));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn run_shortcut_migration(executable: &Path) -> Result<()> {
+    let result = Command::new(executable)
+        .arg("__migrate-shortcuts")
+        .output()
+        .context("run updated shortcut migration")?;
+    ensure!(
+        result.status.success(),
+        "updated shortcut migration failed: {}",
+        String::from_utf8_lossy(&result.stderr).trim()
+    );
+    if !result.stdout.is_empty() {
+        print!("{}", String::from_utf8_lossy(&result.stdout));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -391,6 +572,11 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
         }),
         "check-update" => Some(check_command(&args[1..])),
         "update" => Some(update_command(&args[1..])),
+        "__migrate-shortcuts" => Some(if args.len() == 1 {
+            migrate_command()
+        } else {
+            Err(anyhow!("shortcut migration accepts no arguments"))
+        }),
         "__record-install" => Some(if args.len() == 3 {
             record_install(Path::new(&args[1]), Path::new(&args[2]))
         } else {
@@ -432,7 +618,7 @@ fn check_command(args: &[String]) -> Result<()> {
 fn update_command(args: &[String]) -> Result<()> {
     if help(args) {
         println!(
-            "sessionhub update [--yes]\nDownload the latest stable release, verify SHA-256, and update installer-managed launchers.\nConfirmation is required unless --yes/-y is supplied. No session data or shell profiles are changed."
+            "sessionhub update [--yes]\nDownload the latest stable release, verify SHA-256, update installer-managed launchers, and add missing shortcuts.\nConfirmation is required unless --yes/-y is supplied. No session data or shell profiles are changed."
         );
         return Ok(());
     }
@@ -516,7 +702,9 @@ fn update_command(args: &[String]) -> Result<()> {
     record.validate(&std::env::current_exe()?.canonicalize()?)?;
     #[cfg(not(windows))]
     {
-        replace_all(&binary, &record.binary_paths())?;
+        replace_all(&binary, &record.binary_paths(), || {
+            run_shortcut_migration(&record.install_root.join("bin/agent-session-hub"))
+        })?;
         println!(
             "Updated to {}. All launchers are ready; sessions/settings were untouched.",
             release_version(&release.tag_name)?
@@ -528,25 +716,30 @@ fn update_command(args: &[String]) -> Result<()> {
 }
 
 #[cfg(not(windows))]
-fn replace_all(binary: &[u8], paths: &[PathBuf]) -> Result<()> {
+fn replace_all(binary: &[u8], paths: &[PathBuf], after: impl FnOnce() -> Result<()>) -> Result<()> {
     let originals: Vec<_> = paths.iter().map(fs::read).collect::<io::Result<_>>()?;
-    for (index, path) in paths.iter().enumerate() {
-        if let Err(error) = crate::atomic::write(path, binary) {
-            let mut rollback_errors = Vec::new();
-            for previous in (0..=index).rev() {
-                if let Err(rollback) = crate::atomic::write(&paths[previous], &originals[previous])
-                {
-                    rollback_errors.push(format!("{}: {rollback:#}", paths[previous].display()));
-                }
-            }
-            if !rollback_errors.is_empty() {
-                bail!(
-                    "update failed: {error:#}; recovery required: {}. Rerun the installer",
-                    rollback_errors.join("; ")
-                );
-            }
-            return Err(error).context("update failed; original launchers restored");
+    let mut attempted = 0;
+    let result = (|| {
+        for (index, path) in paths.iter().enumerate() {
+            attempted = index + 1;
+            crate::atomic::write(path, binary)?;
         }
+        after()
+    })();
+    if let Err(error) = result {
+        let mut rollback_errors = Vec::new();
+        for previous in (0..attempted).rev() {
+            if let Err(rollback) = crate::atomic::write(&paths[previous], &originals[previous]) {
+                rollback_errors.push(format!("{}: {rollback:#}", paths[previous].display()));
+            }
+        }
+        if !rollback_errors.is_empty() {
+            bail!(
+                "update failed: {error:#}; recovery required: {}. Rerun the installer",
+                rollback_errors.join("; ")
+            );
+        }
+        return Err(error).context("update failed; original launchers restored");
     }
     Ok(())
 }
@@ -557,11 +750,13 @@ fn schedule_windows(stage: tempfile::TempDir, source: &Path, record: &Installati
     for destination in record.binary_paths() {
         files.push(serde_json::json!({"destination":destination,"source":source,"sha256":hash(&fs::read(&destination)?)}));
     }
-    // The helper replaces binaries only. Existing .cmd and PowerShell routing stays valid.
+    // Invoke the new binary only after every installed copy has been replaced.
     let plan = stage.path().join("plan.json");
     fs::write(
         &plan,
-        serde_json::to_vec(&serde_json::json!({"files":files,"stage":stage.path()}))?,
+        serde_json::to_vec(
+            &serde_json::json!({"files":files,"stage":stage.path(),"migration":record.install_root.join("bin/agent-session-hub.exe")}),
+        )?,
     )?;
     let script = stage.path().join("apply.ps1");
     fs::write(&script, include_str!("update-windows.ps1"))?;
@@ -822,7 +1017,7 @@ mod tests {
         fs::write(&a, b"old a").unwrap();
         fs::write(&b, b"old b").unwrap();
         fs::set_permissions(&a, fs::Permissions::from_mode(0o755)).unwrap();
-        replace_all(b"new", &[a.clone(), b.clone()]).unwrap();
+        replace_all(b"new", &[a.clone(), b.clone()], || Ok(())).unwrap();
         assert_eq!(fs::read(&a).unwrap(), b"new");
         assert_eq!(
             fs::metadata(&a).unwrap().permissions().mode() & 0o777,
@@ -832,8 +1027,141 @@ mod tests {
         #[cfg(target_os = "linux")]
         {
             let blocked = PathBuf::from("/proc/version");
-            assert!(replace_all(b"broken", &[a.clone(), blocked]).is_err());
+            assert!(replace_all(b"broken", &[a.clone(), blocked], || Ok(())).is_err());
             assert_eq!(fs::read(&a).unwrap(), b"new");
         }
+        assert!(
+            replace_all(b"migration", &[a.clone(), b.clone()], || bail!(
+                "migration failed"
+            ))
+            .is_err()
+        );
+        assert_eq!(fs::read(&a).unwrap(), b"new");
+        assert_eq!(fs::read(&b).unwrap(), b"new");
+    }
+
+    #[test]
+    fn shortcut_creation_never_clobbers_an_existing_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("agx");
+        fs::write(&path, b"another command").unwrap();
+        assert!(create_shortcut(&path, b"hub", None).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"another command");
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(create_shortcut(&path, b"hub", None).is_err());
+        fs::remove_dir(&path).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(temp.path().join("missing"), &path).unwrap();
+            assert!(create_shortcut(&path, b"hub", None).is_err());
+            assert!(fs::symlink_metadata(path).unwrap().file_type().is_symlink());
+        }
+    }
+
+    #[test]
+    fn shortcut_transaction_removes_only_its_own_new_files_on_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first");
+        let collision = temp.path().join("agx");
+        fs::write(&collision, b"another command appeared after planning").unwrap();
+        let shortcuts = [first.clone(), collision.clone()]
+            .into_iter()
+            .map(|path| NewShortcut {
+                path,
+                bytes: b"hub shortcut".to_vec(),
+                permissions: None,
+            })
+            .collect();
+        assert!(create_shortcuts(shortcuts).is_err());
+        assert!(!first.exists());
+        assert_eq!(
+            fs::read(collision).unwrap(),
+            b"another command appeared after planning"
+        );
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn shortcut_migration_is_idempotent_and_preserves_existing_wrappers() {
+        let temp = tempfile::tempdir().unwrap();
+        let record = Installation {
+            format: 1,
+            install_root: temp.path().join("install"),
+            bin_root: temp.path().join("custom bin è"),
+        };
+        for path in record.binary_paths() {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"new binary").unwrap();
+        }
+        let exe = record.install_root.join("bin").join(if cfg!(windows) {
+            "agent-session-hub.exe"
+        } else {
+            "agent-session-hub"
+        });
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&exe, fs::Permissions::from_mode(0o711)).unwrap();
+        }
+        #[cfg(windows)]
+        fs::write(record.bin_root.join("csx.cmd"), b"custom existing wrapper").unwrap();
+        let added = migrate_shortcuts(&record, &exe).unwrap();
+        let agx = record
+            .bin_root
+            .join(if cfg!(windows) { "agx.cmd" } else { "agx" });
+        assert!(added.contains(&agx));
+        if cfg!(windows) {
+            assert!(
+                fs::read_to_string(&agx)
+                    .unwrap()
+                    .contains("--provider antigravity")
+            );
+        } else {
+            assert_eq!(fs::read(&agx).unwrap(), b"new binary");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    fs::metadata(&agx).unwrap().permissions().mode() & 0o777,
+                    0o711
+                );
+            }
+        }
+        assert!(migrate_shortcuts(&record, &exe).unwrap().is_empty());
+        record.validate(&exe).unwrap();
+        #[cfg(windows)]
+        assert_eq!(
+            fs::read(record.bin_root.join("csx.cmd")).unwrap(),
+            b"custom existing wrapper"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn updated_provider_list_creates_shortcuts_after_all_binary_copies_match() {
+        let temp = tempfile::tempdir().unwrap();
+        let record = Installation {
+            format: 1,
+            install_root: temp.path().join("install"),
+            bin_root: temp.path().join("bin"),
+        };
+        let paths = record.binary_paths();
+        for path in &paths {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"old binary").unwrap();
+        }
+        let current = record.install_root.join("bin/agent-session-hub");
+        replace_all(b"new binary", &paths, || {
+            let added = migrate_shortcuts(&record, &current)?;
+            assert_eq!(added, vec![record.bin_root.join("agx")]);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            fs::read(record.bin_root.join("agx")).unwrap(),
+            b"new binary"
+        );
+        record.validate(&current).unwrap();
     }
 }

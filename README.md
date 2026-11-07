@@ -65,11 +65,11 @@ your shell using the command printed by the installer.
 Ubuntu 22.04's packaged `fzf` 0.29 is supported. Interactive compatibility is
 checked in CI against fzf 0.29.0 and 0.67.0.
 
-Upgrading from v0.4.x? `sessionhub update` enables Antigravity through
-`sessionhub antigravity`. Rerun the installer and reload your shell to add the
-new `agx` shortcut too. Installations older than v0.4.0 need the installer once
-to enable terminal updates. See [installation details](./docs/install.md) for
-custom paths, source builds, supported platforms, and uninstall instructions.
+Upgrading from v0.4.x or v0.5.0? Run `sessionhub update`, then
+`sessionhub providers` once: the new version adds missing shortcuts such as `agx`
+automatically. No installer rerun is needed. Updates run by v0.5.1 and newer
+perform that migration immediately. Installations older than v0.4.0 still need
+the installer once to enable terminal updates. See [installation details](./docs/install.md).
 
 ### Updates from the terminal
 
@@ -87,7 +87,9 @@ your next launch. Searching, previews, and non-interactive commands do not check
 
 The updater verifies the archive's SHA-256 against the release's `SHA256SUMS`,
 replaces the installed binary/launcher copies, and leaves session data, aliases,
-and shell profiles alone. Windows uses a helper after the updater process exits;
+and shell profiles alone. Missing shortcuts are created automatically in your
+recorded launcher directory; existing files and symlinks are never overwritten
+by shortcut migration. Windows uses a helper after the updater process exits;
 close other hub processes if Windows blocks replacement. Recovery is attempted
 if a launcher replacement fails. Source/package-manager builds should use their
 own installation method.
@@ -252,11 +254,13 @@ not the shared summary index, artifacts, or caches. Browsing never checkpoints
 or deletes Antigravity databases. Aliases are hub-local; deletion, agent trees,
 and age-based cleanup are not supported for this provider.
 
-**Upgrading an existing installation:** `sessionhub update` enables
-`sessionhub antigravity` without changing your shell profile. Rerun the current
-installer and reload your shell to add the new `agx` shortcut and shell function
-(use the same custom install/bin roots, if configured). Existing launchers and
-self-updates continue to work even before `agx` has been installed.
+**Upgrading an existing installation:** v0.5.1 automatically adds missing
+shortcuts, including `agx`, without changing your shell profile. When upgrading
+through the older v0.4.x/v0.5.0 updater, run an existing command such as
+`sessionhub providers` after the update to trigger the one-time migration.
+Subsequent updates run migration immediately. The new shortcut works without
+reloading the shell. To also refresh optional shell functions that change your
+parent shell's directory, run `sessionhub install-shell` and reload your shell.
 
 For a non-default CLI store, set `CODEX_SESSION_HUB_ANTIGRAVITY_SESSION_ROOT` to
 the directory containing `conversation_summaries.db` and `conversations/`.

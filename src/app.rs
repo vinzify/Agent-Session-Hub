@@ -178,6 +178,7 @@ pub fn run() -> Result<()> {
         .unwrap_or_else(|| "agent-session-hub".to_string());
     let mut args = argv.into_iter().skip(1).collect::<Vec<_>>();
 
+    crate::update::migrate_on_start(&args);
     if let Some(result) = crate::update::dispatch(&args) {
         return result;
     }

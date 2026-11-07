@@ -102,10 +102,23 @@ GitHub release tag; response and extraction sizes are capped. Only the root
 executable is read from the archive; archive paths cannot choose installation targets.
 The downloaded executable's reported version must match the selected stable release.
 
-The POSIX `agx` binary copy is optional for compatibility with v0.4.0's updater,
-which knows only the original launchers. Once present, `agx` is validated and
-updated with them (including refusal of mismatched files or symlinks). The
-installer adds new shortcuts; self-update deliberately does not edit profiles.
+New provider binary copies are optional while validating a legacy installation.
+Once present, they are validated and updated with the original launchers,
+including refusal of mismatched files or symlinks. Migration derives missing
+shortcuts from the installed binary's provider registry, validates the installation,
+then stages private files and uses no-clobber persistence. Existing Windows cmd
+wrappers are retained; missing ones use the shared wrapper generator. A failed
+creation rolls back only unchanged files created in that migration.
+
+After replacement, the updater runs the newly installed canonical binary's
+`__migrate-shortcuts` command, so future provider names come from the new version.
+The Unix replacement transaction includes that step; Windows runs it after all
+copies are replaced and before discarding recovery backups. An ordinary startup
+also backfills missing shortcuts for upgrades performed by v0.4/v0.5, whose updater
+cannot call the new hook. Startup avoids content hashing when no shortcuts are
+missing, makes no network requests, and skips hidden query/preview commands.
+Unrecorded source builds and staged version probes never find an installation
+record and cannot migrate another installation. No shell profiles are modified.
 
 Background checks only originate from interactive browse/selection entrypoints.
 They cache an attempted check for 24 hours, use a short network timeout, and never

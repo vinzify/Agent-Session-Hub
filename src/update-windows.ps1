@@ -35,6 +35,17 @@ try {
         [System.IO.File]::Replace($entry.temp, $entry.destination, $entry.backup)
         $committed += $entry
     }
+    if ($plan.PSObject.Properties['migration']) {
+        # Use native process launch, including canonical extended Windows paths.
+        $start = New-Object System.Diagnostics.ProcessStartInfo
+        $start.FileName = $plan.migration
+        $start.Arguments = '__migrate-shortcuts'
+        $start.UseShellExecute = $false
+        $migration = [System.Diagnostics.Process]::Start($start)
+        $migration.WaitForExit()
+        if ($migration.ExitCode -ne 0) { throw 'Shortcut migration failed.' }
+        $migration.Dispose()
+    }
     $succeeded = $true
     Write-Host 'Agent Session Hub updated. All launchers are ready; sessions/settings were untouched.'
 } catch {
