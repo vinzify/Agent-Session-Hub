@@ -73,6 +73,11 @@ the installer once to enable terminal updates. See [installation details](./docs
 
 ### Updates from the terminal
 
+Check the installed version with `sessionhub version`, `sessionhub --version`,
+`sessionhub -V`, or `sessionhub -v`. The same forms work through provider shortcuts.
+Lowercase `-v` is supported from v0.6.1. After upgrading, refresh older Bash/fish
+provider functions with `sessionhub install-shell` and reopen your terminal.
+
 ```sh
 sessionhub version
 sessionhub check-update    # Check now, without installing anything

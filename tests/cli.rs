@@ -1078,7 +1078,14 @@ fn update_management_commands_do_not_prompt_for_a_provider_or_launch_the_picker(
     for args in [
         vec!["version"],
         vec!["--version"],
+        vec!["-V"],
+        vec!["-v"],
         vec!["codex", "version"],
+        vec!["codex", "-v"],
+        vec!["clx", "-v"],
+        vec!["opencode", "-v"],
+        vec!["antigravity", "-v"],
+        vec!["--provider", "claude", "-v"],
         vec!["--provider", "claude", "update", "--help"],
         vec!["check-update", "--help"],
     ] {
@@ -1091,6 +1098,10 @@ fn update_management_commands_do_not_prompt_for_a_provider_or_launch_the_picker(
         assert!(!String::from_utf8_lossy(&output.stderr).contains("Select CLI"));
         assert!(!output.stdout.is_empty());
     }
+    let output = cli(temp.path(), &["-v", "unexpected"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("version accepts no arguments"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("Select CLI"));
     let output = cli(temp.path(), &["update", "--unexpected"]);
     assert!(!output.status.success());
     let output = cli(temp.path(), &["update", "--yes"]);

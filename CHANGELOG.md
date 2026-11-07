@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.1
+
+- Accept lowercase `-v` alongside `-V`, `--version`, and `version`, including shell-wrapper passthrough and provider-qualified commands
+- Added end-to-end provider-menu checks with isolated histories and stub CLIs, covering selection, invalid input, cancellation, and query forwarding
+
 ## 0.6.0
 
 - Added confirmed, recoverable local CLI history deletion for Claude Code and Antigravity, with offline-writer checks, scoped changes, private compressed backups, and explicit recovery list/restore/purge commands

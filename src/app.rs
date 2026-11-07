@@ -110,7 +110,7 @@ fn generic_usage() -> Result<()> {
     println!("sessionhub <csx|clx|opx|agx> [query]");
     println!("sessionhub install-shell");
     println!("sessionhub uninstall-shell");
-    println!("sessionhub version");
+    println!("sessionhub version | --version | -V | -v");
     println!("sessionhub check-update");
     println!("sessionhub update [--yes]");
     println!();
@@ -1327,10 +1327,8 @@ fn doctor_command(provider: ProviderKind) -> Result<()> {
 }
 
 fn usage(provider: ProviderKind) -> Result<()> {
-    println!(
-        "{} version | check-update | update [--yes]",
-        provider.launcher_name()
-    );
+    println!("{} version | --version | -V | -v", provider.launcher_name());
+    println!("{} check-update | update [--yes]", provider.launcher_name());
     println!("{} [query]", provider.launcher_name());
     println!("{} browse [query]", provider.launcher_name());
     println!(

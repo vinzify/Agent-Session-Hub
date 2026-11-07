@@ -564,7 +564,7 @@ impl Drop for Notice {
 pub fn dispatch(args: &[String]) -> Option<Result<()>> {
     let command = args.first()?.as_str();
     match command {
-        "version" | "--version" | "-V" => Some(if args.len() == 1 {
+        "version" | "--version" | "-V" | "-v" => Some(if args.len() == 1 {
             println!("Agent Session Hub {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         } else {
