@@ -756,6 +756,34 @@ fn load_opencode_sessions(index: &AliasIndex) -> Result<Vec<SessionRecord>> {
 }
 
 pub fn load_sessions(provider: ProviderKind, index: &AliasIndex) -> Result<Vec<SessionRecord>> {
+    if provider == ProviderKind::Antigravity {
+        let mut git_cache = HashMap::new();
+        return crate::antigravity::load(&provider_session_root(provider)).map(|conversations| {
+            conversations
+                .into_iter()
+                .map(|conversation| {
+                    let alias = index.get_alias(provider, &conversation.id);
+                    let mut session = new_session_record(
+                        provider,
+                        conversation.id,
+                        conversation.updated,
+                        conversation.updated,
+                        conversation.workspace,
+                        conversation.preview,
+                        alias,
+                        conversation.path,
+                        String::new(),
+                        false,
+                        conversation.title,
+                        String::new(),
+                        &mut git_cache,
+                    );
+                    session.storage_bytes = conversation.storage_bytes;
+                    session
+                })
+                .collect()
+        });
+    }
     if provider == ProviderKind::Opencode {
         return load_opencode_sessions(index);
     }
@@ -794,7 +822,7 @@ pub fn load_sessions(provider: ProviderKind, index: &AliasIndex) -> Result<Vec<S
             let parsed = match provider {
                 ProviderKind::Codex => read_codex_session_file(&file),
                 ProviderKind::Claude => read_claude_session_file(&file, &history),
-                ProviderKind::Opencode => Ok(None),
+                ProviderKind::Opencode | ProviderKind::Antigravity => Ok(None),
             };
             let parsed = match parsed {
                 Ok(parsed) => parsed,

@@ -171,6 +171,7 @@ function Install-AshBinary {
     Set-Content -Path (Join-Path $ResolvedBinRoot 'csx.cmd') -Value ($cmdTemplate -f 'codex')
     Set-Content -Path (Join-Path $ResolvedBinRoot 'clx.cmd') -Value ($cmdTemplate -f 'claude')
     Set-Content -Path (Join-Path $ResolvedBinRoot 'opx.cmd') -Value ($cmdTemplate -f 'opencode')
+    Set-Content -Path (Join-Path $ResolvedBinRoot 'agx.cmd') -Value ($cmdTemplate -f 'antigravity')
     Set-Content -Path (Join-Path $ResolvedBinRoot 'sessionhub.cmd') -Value "@echo off`r`n`"%~dp0agent-session-hub.exe`" %*`r`n"
 
     return $installedBinary
@@ -206,7 +207,7 @@ try {
     if ($SkipShellIntegration) {
         Write-Host 'Shell integration was skipped.'
     } else {
-        Write-Host 'Run: sessionhub help or csx/clx/opx doctor'
+        Write-Host 'Run: sessionhub help or csx/clx/opx/agx doctor'
     }
 }
 finally {

@@ -204,6 +204,14 @@ impl Installation {
             for name in ["csx", "clx", "opx", "sessionhub"] {
                 paths.push(self.bin_root.join(name));
             }
+            // v0.4.0's updater replaces only its known launchers. Keep those
+            // installations updateable; a new install adds agx, after which it
+            // participates in the same validation/replacement transaction.
+            let antigravity = self.bin_root.join("agx");
+            if !matches!(fs::symlink_metadata(&antigravity), Err(error) if error.kind() == io::ErrorKind::NotFound)
+            {
+                paths.push(antigravity);
+            }
         }
         paths.sort();
         paths.dedup();
@@ -651,6 +659,34 @@ mod tests {
             std::os::unix::fs::symlink(&current, &changed).unwrap();
             assert!(record.validate(&current).is_err());
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn old_installs_without_agx_still_validate_and_new_installs_update_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let record = Installation {
+            format: 1,
+            install_root: temp.path().join("install"),
+            bin_root: temp.path().join("launchers"),
+        };
+        for path in record.binary_paths() {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"executable").unwrap();
+        }
+        let current = record.install_root.join("bin/agent-session-hub");
+        assert!(record.validate(&current).is_ok());
+        let agx = record.bin_root.join("agx");
+        assert!(!record.binary_paths().contains(&agx));
+        fs::write(&agx, b"executable").unwrap();
+        assert!(record.binary_paths().contains(&agx));
+        assert!(record.validate(&current).is_ok());
+        fs::write(&agx, b"unrelated executable").unwrap();
+        assert!(record.validate(&current).is_err());
+        fs::remove_file(&agx).unwrap();
+        std::os::unix::fs::symlink(temp.path().join("missing"), &agx).unwrap();
+        assert!(record.binary_paths().contains(&agx));
+        assert!(record.validate(&current).is_err());
     }
 
     #[test]

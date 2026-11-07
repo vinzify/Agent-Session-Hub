@@ -218,6 +218,7 @@ pub fn install_cmd_launchers(exe_path: &Path) -> Result<PathBuf> {
         ("csx.cmd", cmd_launcher_content(exe_name, "codex")),
         ("clx.cmd", cmd_launcher_content(exe_name, "claude")),
         ("opx.cmd", cmd_launcher_content(exe_name, "opencode")),
+        ("agx.cmd", cmd_launcher_content(exe_name, "antigravity")),
         (
             "sessionhub.cmd",
             "@echo off\r\n\"%~dp0agent-session-hub.exe\" %*\r\n".to_string(),
@@ -238,19 +239,21 @@ pub fn install_posix_shell_integration(shell_name: Option<&str>) -> Result<Shell
 
     let block = if profile_path.ends_with("config.fish") || shell_name == Some("fish") {
         format!(
-            "{MARKER_START}\nset -gx PATH \"{}\" $PATH\n{}\n{}\n{}\n{MARKER_END}",
+            "{MARKER_START}\nset -gx PATH \"{}\" $PATH\n{}\n{}\n{}\n{}\n{MARKER_END}",
             launcher_root.display(),
             fish_function("csx"),
             fish_function("clx"),
             fish_function("opx"),
+            fish_function("agx"),
         )
     } else {
         format!(
-            "{MARKER_START}\nexport PATH='{}':$PATH\n{}\n{}\n{}\n{MARKER_END}",
+            "{MARKER_START}\nexport PATH='{}':$PATH\n{}\n{}\n{}\n{}\n{MARKER_END}",
             escape_sh_single_quotes(&launcher_root.to_string_lossy()),
             posix_function("csx", &["browse"]),
             posix_function("clx", &["browse"]),
             posix_function("opx", &["browse"]),
+            posix_function("agx", &["browse"]),
         )
     };
     replace_marked_block(&profile_path, &block)?;
@@ -282,10 +285,12 @@ if (($env:Path -split ';') -notcontains '{launcher_root}') {{
 {}
 {}
 {}
+{}
 {MARKER_END}"#,
         powershell_function("csx", "codex", &exe),
         powershell_function("clx", "claude", &exe),
         powershell_function("opx", "opencode", &exe),
+        powershell_function("agx", "antigravity", &exe),
     )
 }
 
@@ -312,6 +317,9 @@ mod tests {
         assert!(block.contains("--provider codex @args"));
         assert!(block.contains("--provider opencode __select @args"));
         assert!(block.contains("--provider opencode --resume"));
+        assert!(block.contains("function agx"));
+        assert!(block.contains("--provider antigravity __select @args"));
+        assert!(block.contains("--provider antigravity --resume"));
         assert!(block.contains("$commandName -eq 'browse'"));
     }
 
@@ -328,6 +336,17 @@ mod tests {
             );
             assert!(fish_function("csx").contains(command));
         }
+    }
+
+    #[test]
+    fn antigravity_launchers_use_the_hub_provider_not_the_agy_binary_name() {
+        let temp = tempfile::tempdir().unwrap();
+        install_cmd_launchers(&temp.path().join("agent-session-hub.exe")).unwrap();
+        let cmd = fs::read_to_string(temp.path().join("agx.cmd")).unwrap();
+        assert!(cmd.contains("--provider antigravity __select"));
+        assert!(cmd.contains("--provider antigravity --resume"));
+        assert!(posix_function("agx", &["browse"]).contains("command agx __select"));
+        assert!(fish_function("agx").contains("command agx --resume"));
     }
 
     #[cfg(unix)]

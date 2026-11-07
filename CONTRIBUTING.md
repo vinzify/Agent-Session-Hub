@@ -4,7 +4,7 @@
 
 1. Install Rust from https://rustup.rs/
 2. Install `fzf`
-3. Install `codex`, `claude`, and/or `opencode`
+3. Install at least one provider: `codex`, `claude`, `opencode`, or Antigravity CLI (`agy`)
 4. Run `cargo test`
 
 ## Local install
@@ -21,7 +21,7 @@ Or on Windows:
 
 ## Notes
 
-- The public commands are `sessionhub`, `csx`, `clx`, and `opx`
+- The public commands are `sessionhub`, `csx`, `clx`, `opx`, and `agx`
 - The Rust runtime lives under `src/*.rs`
 - `cargo test` is the test entrypoint
 

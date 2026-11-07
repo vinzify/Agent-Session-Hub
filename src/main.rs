@@ -1,3 +1,4 @@
+mod antigravity;
 mod app;
 mod atomic;
 mod browser;

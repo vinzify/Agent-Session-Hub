@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import sqlite3
 import tempfile
 import time
 
@@ -16,12 +17,12 @@ import pyte
 
 
 class Picker:
-    def __init__(self, binary, env, args):
+    def __init__(self, binary, env, args, provider="codex"):
         self.screen = pyte.Screen(180, 32)
         self.stream = pyte.Stream(self.screen)
         self.transcript = ""
         self.child = pexpect.spawn(
-            str(binary), ["--provider", "codex", *args], env=env,
+            str(binary), ["--provider", provider, *args], env=env,
             encoding="utf-8", codec_errors="replace", dimensions=(32, 180),
         )
 
@@ -152,6 +153,33 @@ def main():
         finally:
             picker.close()
         print("PASS: collapsed security-scan expansion and cancellation")
+
+        # A fourth provider must use its own index in reload/preview helpers,
+        # without invoking agy or opening a real conversation during QA.
+        antigravity = root / "antigravity"
+        (antigravity / "conversations").mkdir(parents=True)
+        project = root / "Sicilia café project"
+        project.mkdir()
+        with sqlite3.connect(antigravity / "conversation_summaries.db") as db:
+            db.execute("CREATE TABLE conversation_summaries (conversation_id TEXT, title TEXT, "
+                       "preview TEXT, last_modified_time TEXT, workspace_uris TEXT)")
+            db.execute("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)",
+                       ("ag-chat", "ANTIGRAVITY_CANARY prepare release",
+                        "AG_PREVIEW_CANARY review the release plan",
+                        "2026-11-07 10:43:48.388633693+00:00", json.dumps([project.as_uri()])))
+        with sqlite3.connect(antigravity / "conversations/ag-chat.db") as db:
+            db.execute("CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_payload BLOB)")
+        env["CODEX_SESSION_HUB_ANTIGRAVITY_SESSION_ROOT"] = str(antigravity)
+        picker = Picker(binary, env, ["__select"], provider="antigravity")
+        try:
+            picker.wait_for(lambda text: "ANTIGRAVITY_CANARY" in text, "Antigravity startup missing")
+            picker.child.send("title:ANTIGRAVITY_CANARY")
+            picker.child.send("\x1b[B")
+            picker.wait_for(lambda text: "AG_PREVIEW_CANARY" in text, "Antigravity preview missing")
+            picker.finish("\r", expected_selection=str(project) + "\tag-chat")
+        finally:
+            picker.close()
+        print("PASS: Antigravity index loading, title search, preview, and workspace selection")
 
 
 if __name__ == "__main__":

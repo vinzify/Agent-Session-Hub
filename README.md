@@ -15,10 +15,12 @@
   <a href="#everyday-use">Usage</a> ·
   <a href="#storage-cleanup">Storage cleanup</a> ·
   <a href="#supported-providers">Providers</a> ·
+  <a href="#google-antigravity-cli">Antigravity</a> ·
   <a href="./CONTRIBUTING.md">Contribute</a>
 </p>
 
-Agent Session Hub is a native Rust CLI for **Codex CLI, Claude Code, and OpenCode**.
+Agent Session Hub is a native Rust CLI for **Codex CLI, Claude Code, OpenCode,
+and Google Antigravity CLI**.
 It brings local session history into an `fzf` picker, groups conversations by
 workspace, and reopens them from the right project directory.
 
@@ -57,15 +59,17 @@ irm https://github.com/vinzify/Agent-Session-Hub/releases/latest/download/instal
 ```
 
 You need `fzf` **0.29 or newer** and at least one supported coding CLI in your `PATH`. The installer
-adds `sessionhub`, `csx`, `clx`, and `opx`, and sets up shell integration. Reload
+adds `sessionhub`, `csx`, `clx`, `opx`, and `agx`, and sets up shell integration. Reload
 your shell using the command printed by the installer.
 
 Ubuntu 22.04's packaged `fzf` 0.29 is supported. Interactive compatibility is
 checked in CI against fzf 0.29.0 and 0.67.0.
 
-Existing users: run the installer once more and reload your shell to enable the
-new update commands. See [installation details](./docs/install.md) for source
-builds, supported platforms, and uninstall instructions.
+Upgrading from v0.4.x? `sessionhub update` enables Antigravity through
+`sessionhub antigravity`. Rerun the installer and reload your shell to add the
+new `agx` shortcut too. Installations older than v0.4.0 need the installer once
+to enable terminal updates. See [installation details](./docs/install.md) for
+custom paths, source builds, supported platforms, and uninstall instructions.
 
 ### Updates from the terminal
 
@@ -75,7 +79,7 @@ sessionhub check-update    # Check now, without installing anything
 sessionhub update          # Confirm, verify, and install the latest stable release
 ```
 
-`csx`, `clx`, and `opx` accept these commands too. Interactive browsing checks for
+`csx`, `clx`, `opx`, and `agx` accept these commands too. Interactive browsing checks for
 updates in the background at most once per day and shows a terminal notice when
 a newer stable release is known. It never installs updates automatically or
 interrupts a running coding session. Short picker visits may show the result on
@@ -101,6 +105,7 @@ sessionhub     # Choose a provider
 csx            # Codex CLI
 clx            # Claude Code
 opx            # OpenCode
+agx            # Google Antigravity CLI (agy)
 ```
 
 Workspaces and conversations appear in order of recent activity. The date column
@@ -155,7 +160,7 @@ csx doctor
 
 Aliases are stored by Agent Session Hub. `delete` removes session data and is
 immediate when invoked as a direct command; use `Ctrl-D` in the picker for an
-interactive confirmation. Run `csx help`, `clx help`, or `opx help` for commands,
+interactive confirmation. Run `csx help`, `clx help`, `opx help`, or `agx help` for commands,
 or `sessionhub providers` to check provider availability.
 
 ## Storage cleanup
@@ -208,17 +213,53 @@ You can combine category flags. Ages accept hours, days, or weeks (`12h`, `7d`,
 
 ## Supported providers
 
-| Capability | Codex CLI (`csx`) | Claude Code (`clx`) | OpenCode (`opx`) |
-| --- | --- | --- | --- |
-| Search, preview, and resume | Yes | Yes | Yes |
-| Workspace grouping and local aliases | Yes | Yes | Yes |
-| Per-session storage sizes | File size | File size | Estimated payload size |
-| Session deletion | Yes | No | Yes |
-| Connected agent trees and scan grouping | Yes | — | — |
-| Age-based storage cleanup | Yes | — | — |
+| Capability | Codex CLI (`csx`) | Claude Code (`clx`) | OpenCode (`opx`) | Antigravity CLI (`agx`) |
+| --- | --- | --- | --- | --- |
+| Search, preview, and resume | Yes | Yes | Yes | Yes (index preview) |
+| Workspace grouping and local aliases | Yes | Yes | Yes | Yes |
+| Per-session storage sizes | File size | File size | Estimated payload size | DB + WAL/SHM files |
+| Session deletion | Yes | No | Yes | No |
+| Connected agent trees and scan grouping | Yes | — | — | — |
+| Age-based storage cleanup | Yes | — | — | — |
 
 OpenCode stores sessions in a shared SQLite database. Its displayed sizes are
 estimates of session payloads, not guaranteed disk space reclaimed by deletion.
+
+### Google Antigravity CLI
+
+Available in v0.5.0 and newer.
+
+Install Google's `agy` CLI separately and start a conversation there first. Then:
+
+```sh
+agx
+agx browse title:release
+sessionhub antigravity       # Same provider, without the shortcut
+agx doctor
+```
+
+The hub reads `~/.gemini/antigravity-cli/conversation_summaries.db` in read-only
+mode and resumes a selection with [`agy --conversation <id>`](https://antigravity.google/docs/cli/commands/resume/).
+Titles, short previews, workspace paths, and last activity come from that index;
+the hub does not decode the private protobuf step data. Only indexed conversations
+with a local `conversations/<id>.db` file and a file-URI workspace are shown.
+Older IDE-only history and remote-only entries are not listed as CLI sessions.
+Use Antigravity's own `/resume` import flow to bring IDE conversations into its
+CLI store first. Multi-workspace conversations use their first local workspace.
+
+Sizes include the individual database and any `-wal` / `-shm` companion files,
+not the shared summary index, artifacts, or caches. Browsing never checkpoints
+or deletes Antigravity databases. Aliases are hub-local; deletion, agent trees,
+and age-based cleanup are not supported for this provider.
+
+**Upgrading an existing installation:** `sessionhub update` enables
+`sessionhub antigravity` without changing your shell profile. Rerun the current
+installer and reload your shell to add the new `agx` shortcut and shell function
+(use the same custom install/bin roots, if configured). Existing launchers and
+self-updates continue to work even before `agx` has been installed.
+
+For a non-default CLI store, set `CODEX_SESSION_HUB_ANTIGRAVITY_SESSION_ROOT` to
+the directory containing `conversation_summaries.db` and `conversations/`.
 
 ## Performance and local data
 

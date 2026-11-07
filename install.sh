@@ -119,6 +119,7 @@ install_binary() {
   atomic_install_binary "$installed_binary" "${BIN_ROOT}/csx"
   atomic_install_binary "$installed_binary" "${BIN_ROOT}/clx"
   atomic_install_binary "$installed_binary" "${BIN_ROOT}/opx"
+  atomic_install_binary "$installed_binary" "${BIN_ROOT}/agx"
   atomic_install_binary "$installed_binary" "${BIN_ROOT}/sessionhub"
 }
 
@@ -161,7 +162,7 @@ main() {
   if [ "$SKIP_SHELL_INTEGRATION" = "1" ]; then
     printf 'Shell integration was skipped.\n'
   else
-    printf 'Run: sessionhub help or csx/clx/opx doctor\n'
+    printf 'Run: sessionhub help or csx/clx/opx/agx doctor\n'
   fi
 }
 

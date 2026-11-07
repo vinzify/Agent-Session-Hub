@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0
+
+- Added Google Antigravity CLI as a fourth provider: `agx` / `sessionhub antigravity`, resuming with `agy --conversation <id>` from the recorded workspace
+- Added read-only SQLite summary previews, search, local aliases, last-activity ordering, and per-conversation DB/WAL/SHM sizes
+- Excluded stale IDE-only entries without local CLI databases and remote-only workspaces; left Antigravity deletion and cleanup disabled
+- Added Antigravity launchers to POSIX/PowerShell/cmd installers and shell integration, preserving self-update compatibility with existing installations
+- Documented provider scope, local data paths, and the shortcut upgrade procedure
+
 ## 0.4.0
 
 - Added `version`, `check-update`, and confirmed `update [--yes]` commands through sessionhub/csx/clx/opx

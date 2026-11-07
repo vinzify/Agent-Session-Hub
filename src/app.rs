@@ -42,6 +42,7 @@ fn generic_provider(provider: ProviderKind) -> &'static str {
         ProviderKind::Codex => "codex",
         ProviderKind::Claude => "claude",
         ProviderKind::Opencode => "opencode",
+        ProviderKind::Antigravity => "antigravity",
     }
 }
 
@@ -50,6 +51,7 @@ fn generic_provider_from_arg(value: &str) -> Option<ProviderKind> {
         "codex" | "csx" => Some(ProviderKind::Codex),
         "claude" | "clx" => Some(ProviderKind::Claude),
         "opencode" | "opx" => Some(ProviderKind::Opencode),
+        "antigravity" | "agx" => Some(ProviderKind::Antigravity),
         _ => None,
     }
 }
@@ -67,7 +69,7 @@ fn prompt_for_provider() -> Result<Option<ProviderKind>> {
     }
 
     loop {
-        eprint!("Choice [1-3,q]: ");
+        eprint!("Choice [1-{},q]: ", ProviderKind::all().len());
         io::stderr().flush()?;
         let mut choice = String::new();
         io::stdin().read_line(&mut choice)?;
@@ -77,6 +79,7 @@ fn prompt_for_provider() -> Result<Option<ProviderKind>> {
             "1" | "csx" | "codex" => return Ok(Some(ProviderKind::Codex)),
             "2" | "clx" | "claude" => return Ok(Some(ProviderKind::Claude)),
             "3" | "opx" | "opencode" => return Ok(Some(ProviderKind::Opencode)),
+            "4" | "agx" | "antigravity" => return Ok(Some(ProviderKind::Antigravity)),
             _ => eprintln!("Unknown choice: {normalized}"),
         }
     }
@@ -103,8 +106,8 @@ fn generic_providers() {
 fn generic_usage() -> Result<()> {
     println!("sessionhub");
     println!("sessionhub providers");
-    println!("sessionhub <codex|claude|opencode> [query]");
-    println!("sessionhub <csx|clx|opx> [query]");
+    println!("sessionhub <codex|claude|opencode|antigravity> [query]");
+    println!("sessionhub <csx|clx|opx|agx> [query]");
     println!("sessionhub install-shell");
     println!("sessionhub uninstall-shell");
     println!("sessionhub version");
@@ -113,7 +116,9 @@ fn generic_usage() -> Result<()> {
     println!();
     generic_providers();
     println!();
-    println!("Use `csx help`, `clx help`, or `opx help` for provider-specific commands.");
+    println!(
+        "Use `csx help`, `clx help`, `opx help`, or `agx help` for provider-specific commands."
+    );
     Ok(())
 }
 
@@ -144,7 +149,7 @@ fn generic_dispatch(args: &[String]) -> Result<()> {
             generic_providers();
             println!();
             println!(
-                "Use `csx doctor`, `clx doctor`, or `opx doctor` for provider-specific diagnostics."
+                "Use `csx doctor`, `clx doctor`, `opx doctor`, or `agx doctor` for provider-specific diagnostics."
             );
             Ok(())
         }
@@ -245,8 +250,11 @@ fn delete_session(
             fs::remove_file(&session.file_path)
                 .with_context(|| format!("remove {}", session.file_path.display()))?;
         }
-        ProviderKind::Claude => {
-            return Err(anyhow!("Claude session delete is not supported."));
+        ProviderKind::Claude | ProviderKind::Antigravity => {
+            return Err(anyhow!(
+                "{} session delete is not supported.",
+                provider.display_name()
+            ));
         }
         ProviderKind::Opencode => {
             let status = Command::new("opencode")
@@ -961,6 +969,21 @@ fn resume_provider(
                 return Err(anyhow!("opencode resume failed"));
             }
         }
+        ProviderKind::Antigravity => {
+            anyhow::ensure!(
+                crate::antigravity::valid_id(session_id),
+                "invalid Antigravity conversation ID"
+            );
+            let mut command = Command::new(&provider_binary);
+            command.arg("--conversation").arg(session_id);
+            if let Some(project_path) = project_path.filter(|value| !value.trim().is_empty()) {
+                command.current_dir(project_path);
+            }
+            let status = command.status().context("run agy")?;
+            if !status.success() {
+                return Err(anyhow!("Antigravity CLI resume failed"));
+            }
+        }
     }
     Ok(())
 }
@@ -1000,7 +1023,7 @@ fn uninstall_shell_command(_provider: ProviderKind) -> Result<()> {
     if cfg!(windows) {
         let profile_path = uninstall_powershell_shell_integration()?;
         let launcher_root = crate::paths::launcher_root();
-        for name in ["csx.cmd", "clx.cmd", "opx.cmd", "sessionhub.cmd"] {
+        for name in ["csx.cmd", "clx.cmd", "opx.cmd", "agx.cmd", "sessionhub.cmd"] {
             let path = launcher_root.join(name);
             if path.exists() {
                 let _ = fs::remove_file(path);

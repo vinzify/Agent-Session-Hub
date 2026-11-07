@@ -637,7 +637,12 @@ pub fn session_preview(session: &DisplaySession, project_sessions: &[&DisplaySes
         } else {
             format!("Group:    {project_count_text}")
         },
-        format!("Started:  {}", session.session.timestamp_text),
+        if session.session.provider == crate::provider::ProviderKind::Antigravity {
+            // Its summary index exposes last activity, not conversation creation.
+            String::new()
+        } else {
+            format!("Started:  {}", session.session.timestamp_text)
+        },
         format!(
             "Updated:  {} ({})",
             session.session.last_updated_age, session.session.last_updated_text

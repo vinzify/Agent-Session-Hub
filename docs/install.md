@@ -25,6 +25,7 @@ The local source path builds the binary with Cargo and installs:
 - `csx`
 - `clx`
 - `opx`
+- `agx`
 
 Example:
 
@@ -39,7 +40,7 @@ Example:
 ## Requirements
 
 - `fzf` 0.29 or newer (including Ubuntu 22.04's packaged version)
-- `codex`, `claude`, and/or `opencode`
+- At least one of `codex`, `claude`, `opencode`, or Antigravity CLI (`agy`)
 - Rust only when installing from a local checkout
 
 ## Release platforms
@@ -64,7 +65,7 @@ sessionhub update
 sessionhub update --yes
 ```
 
-These management commands also work through `csx`, `clx`, and `opx`. Update checks
+These management commands also work through `csx`, `clx`, `opx`, and `agx`. Update checks
 use GitHub's latest stable release; prereleases and downgrades are not installed.
 The updater downloads a platform archive and matching `SHA256SUMS` from the same
 release tag over HTTPS, verifies its SHA-256 and executable version, and only then
@@ -94,6 +95,18 @@ To refresh shell integration separately:
 ```sh
 csx install-shell
 ```
+
+### Adding the Antigravity shortcut to an older install
+
+After updating the binary, `sessionhub antigravity` works immediately. Self-update
+does not create new shortcuts or rewrite shell profiles. Rerun the current
+installer, preserving any custom `INSTALL_ROOT` / `BIN_ROOT` (PowerShell:
+`-InstallRoot` / `-BinRoot`), then reload your shell to install `agx` too.
+`install-shell` by itself refreshes shell functions, not the POSIX binary copies.
+
+Antigravity support requires the `agy` CLI and its SQLite conversation store,
+normally `~/.gemini/antigravity-cli`. It does not read the older IDE's private
+conversation format directly. See [provider details](../README.md#google-antigravity-cli).
 
 ## Uninstall
 
