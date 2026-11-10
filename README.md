@@ -8,6 +8,7 @@
   <a href="https://github.com/vinzify/Agent-Session-Hub/actions/workflows/ci.yml"><img src="https://github.com/vinzify/Agent-Session-Hub/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
   <a href="https://github.com/vinzify/Agent-Session-Hub/releases/latest"><img src="https://img.shields.io/github/v/release/vinzify/Agent-Session-Hub" alt="Latest release"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
+  <a href="https://hub.xerj.org/contributors/vinzify"><img src="https://hub.xerj.org/contributors/vinzify/badge.svg" alt="XERJ Corpus Hub contributor"></a>
 </p>
 
 <p align="center">
@@ -372,5 +373,10 @@ On Windows, use `.\install.ps1` for the local install.
 Read [CONTRIBUTING.md](./CONTRIBUTING.md) for development and release guidance.
 Bug reports are welcome in [GitHub Issues](https://github.com/vinzify/Agent-Session-Hub/issues);
 include your OS, provider, and the output of the relevant `doctor` command.
+
+The [Antigravity CLI integration](https://github.com/vinzify/Agent-Session-Hub/commit/9b009912324fbae0f78dd944c9fbfcf67dd1918d)
+was selected for the [XERJ Corpus Hub](https://hub.xerj.org/corpus/vinzify--agent-session-hub)
+as a reference implementation for coding agents, with attribution to this project
+and its author. [View the contributor listing](https://hub.xerj.org/contributors/vinzify).
 
 Licensed under the [MIT License](./LICENSE).
